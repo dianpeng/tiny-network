@@ -50,7 +50,7 @@ int main() {
         return -1;
     } 
     for(;;) {
-        net_server_poll(&ser,-1);
+        net_server_poll(&ser,-1,NULL);
     }
     return 0;
 }
