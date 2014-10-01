@@ -36,7 +36,7 @@ extern "C" {
 #endif // NDEBUG
 
 #ifndef MULTI_SERVER_ENABLE
-    static char single_server_internal_buffer[MAXIMUM_IPV4_PACKET_SIZE];
+static char single_server_internal_buffer[MAXIMUM_IPV4_PACKET_SIZE];
 #endif
 
 #define cast(x,p) ((x)(p))
@@ -252,11 +252,9 @@ static struct net_connection_t* connection_create( socket_t fd ) {
 
 static struct net_connection_t* connection_destroy( struct net_connection_t* conn ) {
     struct net_connection_t* ret = conn->prev;
-    // closing the underlying socket and this must be called once the
+    // closing the underlying socket and this must be called at once
     conn->prev->next = conn->next;
     conn->next->prev = conn->prev;
-    // call close here
-    // free the memory
     net_buffer_free(&(conn->in));
     net_buffer_free(&(conn->out));
     mem_free(conn);
@@ -443,7 +441,7 @@ static void dispatch( struct net_server_t* server , fd_set* read_set , fd_set* w
     if( server->listen_fd != invalid_socket_handler && FD_ISSET(server->listen_fd,read_set) ) {
         do_accept(server);
     }
-    // 3. lopping through all the received events in the list
+    // 3. looping through all the received events in the list
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         ev = 0; ec = 0;
         // timeout
@@ -519,14 +517,12 @@ static void dispatch( struct net_server_t* server , fd_set* read_set , fd_set* w
 
 static void reclaim_socket( struct net_server_t* server ) {
     struct net_connection_t* conn;
-    // 4. reclaim all the socket that has marked it as CLOSE operation
+    // reclaim all the socket that has marked it as CLOSE operation
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_CLOSE ) {
             connection_cb(NET_EV_CLOSE,0,conn);
             conn = connection_close(conn);
         } else if( conn->pending_event & NET_EV_REMOVE ) {
-            // we just remove the connection instead of close the underlying socket
-            // before we do so, we invoke the callback handler and let the user have
             connection_cb(NET_EV_REMOVE,0,conn);
             conn = connection_destroy(conn);
         }
@@ -556,7 +552,7 @@ int net_server_poll( struct net_server_t* server , int millis ) {
         tv.tv_sec = millis / 1000;
         tv.tv_usec = (millis % 1000) * 1000;
     }
-    // we use clock since clock will be round up at 36 min which is way more enough for us
+    
     if( server->last_io_time == 0 )
         server->last_io_time = get_time_millisec();
     // start our polling mechanism
