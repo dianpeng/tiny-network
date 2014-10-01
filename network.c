@@ -429,12 +429,13 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
     }
 }
 
-static void dispatch( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int time_diff ) {
+static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int time_diff ) {
     struct net_connection_t* conn;
     int ev , rw , ret ,ec;
     // 1. checking if we have control operation or not
     if( FD_ISSET(server->ctrl_fd,read_set) ) {
         do_control(server);
+        return 1;
     }
     // 2. checking the accept operation is done or not
     if( server->listen_fd != invalid_socket_handler && FD_ISSET(server->listen_fd,read_set) ) {
@@ -512,6 +513,7 @@ static void dispatch( struct net_server_t* server , fd_set* read_set , fd_set* w
             connection_cb(NET_EV_TIMEOUT,0,conn);
         }
     }
+    return 0;
 }
 
 static void reclaim_socket( struct net_server_t* server ) {
@@ -526,7 +528,7 @@ static void reclaim_socket( struct net_server_t* server ) {
     }
 }
 
-int net_server_poll( struct net_server_t* server , int millis ) {
+int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
     fd_set read_set , write_set;
     socket_t max_fd = invalid_socket_handler;
     int active_num , return_num;
@@ -549,7 +551,7 @@ int net_server_poll( struct net_server_t* server , int millis ) {
         tv.tv_sec = millis / 1000;
         tv.tv_usec = (millis % 1000) * 1000;
     }
-    
+
     if( server->last_io_time == 0 )
         server->last_io_time = get_time_millisec();
     // start our polling mechanism
@@ -557,7 +559,11 @@ int net_server_poll( struct net_server_t* server , int millis ) {
         max_fd = 0;
     active_num = select(max_fd+1,&read_set,&write_set,NULL,millis >= 0 ? &tv : NULL);
     if( active_num < 0 ) {
-        return -1;
+        int err = net_has_error();
+        if( err == 0 )
+          return 0;
+        else
+          return -1;
     }
     return_num = active_num;
     cur_time = get_time_millisec();
@@ -568,7 +574,7 @@ int net_server_poll( struct net_server_t* server , int millis ) {
         if( time_diff > 0 )
             server->last_io_time = cur_time;
     }
-    // if we have errono set to EWOULDBLOCK EINTER which typically
+    // if we have errno set to EWOULDBLOCK EINTER which typically
     // require us to re-enter the loop, we don't need to do this
     // what we need to do is just put this poll into the loop , so
     // no need to worry about the problem returned by the select
@@ -576,7 +582,8 @@ int net_server_poll( struct net_server_t* server , int millis ) {
     if( active_num >= 0 ) {
         if( time_diff == 0 )
             time_diff = 1;
-        dispatch(server,&read_set,&write_set,time_diff);
+        if( wakeup != NULL )
+            *wakeup = dispatch(server,&read_set,&write_set,time_diff);
     }
     // 4. reclaim all the socket that has marked it as CLOSE operation
     reclaim_socket(server);

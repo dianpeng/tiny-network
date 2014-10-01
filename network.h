@@ -86,7 +86,7 @@ void net_init();
 // server function
 int net_server_create( struct net_server_t* , const char* addr , net_acb_func cb );
 void net_server_destroy( struct net_server_t* );
-int net_server_poll( struct net_server_t* ,int );
+int net_server_poll( struct net_server_t* ,int , int* );
 int net_server_wakeup( struct net_server_t* );
 
 // client function

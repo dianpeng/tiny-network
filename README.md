@@ -68,4 +68,6 @@ Just notify the tiny network library what you want to do in next callback and th
 ##Platform
 1. Windows
 2. Linux
-3. Mac (not ready yet)
+
+##Dependency
+NO
