@@ -519,10 +519,8 @@ static void reclaim_socket( struct net_server_t* server ) {
     // reclaim all the socket that has marked it as CLOSE operation
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_CLOSE ) {
-            connection_cb(NET_EV_CLOSE,0,conn);
             conn = connection_close(conn);
         } else if( conn->pending_event & NET_EV_REMOVE ) {
-            connection_cb(NET_EV_REMOVE,0,conn);
             conn = connection_destroy(conn);
         }
     }
@@ -749,7 +747,7 @@ struct net_connection_t* net_fd( struct net_server_t* server, net_ccb_func cb , 
 }
 
 void net_cancel( struct net_connection_t* conn ) {
-    connection_close(conn);
+    conn->pending_event = NET_EV_CLOSE;
 }
 
 // platform problem
