@@ -13,7 +13,8 @@ The only 2 functions you need to know is 1) accept callback and 2) connection ca
 ```
 #include <network.h>
 
-// This connection callback will be invoked after each connection registered // interested events _FINISHED_ .
+// This connection callback will be invoked after each connection registered 
+// interested events _FINISHED_ .
 int conn_cb( int ev , int ec , struct net_connection_t* conn ) {
     if( ec ) {
         fprintf(stderr,"%s\n",strerror(errno));
@@ -31,7 +32,7 @@ int conn_cb( int ev , int ec , struct net_connection_t* conn ) {
     }
 }
 
-// This callback function will be invoked for every connection that has been // accepted
+// This callback function will be invoked for every connection that has been accepted
 int accept_cb( int ec , struct net_server_t* ser ,struct net_connection_t* conn ) {
     if( ec ) {
         fprintf(stderr,"%s\n",strerror(errno));
