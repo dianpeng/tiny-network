@@ -66,8 +66,10 @@ struct net_connection_t {
     int pending_event;
     int timeout;
 };
+  
+struct net_server_t;
 
-typedef int (*net_acb_func)( int err_code , struct net_connection_t* connection );
+typedef int (*net_acb_func)( int err_code , struct net_server_t* , struct net_connection_t* connection );
 
 struct net_server_t {
     void* user_data;
