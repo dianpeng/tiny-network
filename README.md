@@ -4,7 +4,7 @@ A tiny , cross platform and easy to use network library
 
 ## What is tiny network
 
-You may have used thousands of network library, like libevent , libev. Those libraries are greate, so why bother another one ? Because this library is a library design for small server that doesn't need to support C10K and also it is a much easy to use library. It allows you to focus on your logic code entirely. 
+You may have used many network libraries, like libevent , libev. Those libraries are greate, so why bother another one ? Because tiny network is a library design for small server that doesn't need to support C10K and also it is a much easy to use library. It allows you to focus on your logic code entirely. 
 
 
 ## Show me the code 
