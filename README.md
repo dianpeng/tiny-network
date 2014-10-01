@@ -7,7 +7,7 @@ A tiny , cross platform and easy to use network library
 You may have used many network libraries, like libevent , libev. Those libraries are greate, so why bother another one ? Because tiny network is a library design for small server that doesn't need to support C10K. It is extreamly tiny and easy to use. Since it only has 2 files, it is easy to integrate it into your project.
 
 ## Show me the code 
-The only 2 functions you need to know is 1) accept callback and 2) connection callback. The concept is simple as hell. struct net_connection_t represent everthing that is not a server( not only a connection, also could be a timer) . struct net_server_t is a structure represents the server. Lastly a struct net_buffer_t is used to help you handle network read/write buffer. Then you are all set.
+The only 2 functions you need to know is 1) accept callback and 2) connection callback. The concept is very simple. struct net_connection_t represent everthing that is not a server( not only a connection, also could be a timer) . struct net_server_t is a structure represents the server. Lastly a struct net_buffer_t is used to help you handle network read/write buffer. Then you are all set.
 
 ```
 #include <network.h>
