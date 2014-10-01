@@ -1,7 +1,5 @@
 #include "network.h"
-#ifdef __APPLE__
-#include <malloc/malloc.h>
-#else
+#ifndef __APPLE__
 #include <malloc.h>
 #endif // __APPLE__
 #include <assert.h>
@@ -10,6 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #ifndef _WIN32
 #include <sys/select.h>
