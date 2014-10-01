@@ -44,6 +44,11 @@ static char single_server_internal_buffer[MAXIMUM_IPV4_PACKET_SIZE];
 #define min(x,y) ((x) < (y) ? (x) : (y))
 #endif // min
 
+// Internal message for linger options
+enum {
+    NET_EV_TIMEOUT_AND_CLOSE = 1 << 10
+};
+
 static void* mem_alloc( size_t cap ) {
     void* ret = malloc(cap);
     VERIFY(ret);
@@ -397,7 +402,8 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
     // adding the whole connection that we already have to the sets
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         // timeout is a always configurable event
-        if( conn->pending_event & NET_EV_TIMEOUT ) {
+        if( conn->pending_event & NET_EV_TIMEOUT || 
+            conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE ) {
             if( conn->timeout >= 0 ) {
                 if( (*millis >=0 && *millis > conn->timeout) || *millis < 0 ) {
                     *millis = conn->timeout;
@@ -445,9 +451,10 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         ev = 0; ec = 0;
         // timeout
-        if( conn->pending_event & NET_EV_TIMEOUT ) {
+        if( conn->pending_event & NET_EV_TIMEOUT || 
+            conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE ) {
             if( conn->timeout <= time_diff ) {
-                ev |= NET_EV_TIMEOUT;
+                ev |= (conn->pending_event & NET_EV_TIMEOUT) ? NET_EV_TIMEOUT : NET_EV_TIMEOUT_AND_CLOSE;
             } else {
                 conn->timeout -= time_diff;
             }
@@ -494,23 +501,29 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
             continue;
         }
         // linger
-        if( (conn->pending_event & NET_EV_LINGER) || (conn->pending_event & NET_EV_LINGER_SILENT) ) {
+        if( ((conn->pending_event & NET_EV_LINGER) || (conn->pending_event & NET_EV_LINGER_SILENT)) && FD_ISSET(conn->socket_fd,write_set) ) {
             ec = 0;
             ret = do_write(conn,&ec);
             if( ret <= 0 ) {
-                // close this connection since we have no context information here
                 conn->pending_event = NET_EV_CLOSE;
             } else if( net_buffer_readable_size(&(conn->out)) == 0 ) {
                 if( conn->pending_event & NET_EV_LINGER ) {
                     connection_cb(NET_EV_LINGER,ec,conn);
                 }
-                conn = connection_close(conn);
+                if( conn->pending_event & NET_EV_TIMEOUT && (conn->timeout >0) ) {
+                    conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
+                } else {
+                    conn->pending_event = NET_EV_CLOSE;
+                }
             }
             continue;
         }
         // if we reach here means only timeout is specified
         if( (conn->pending_event & NET_EV_TIMEOUT) && (ev & NET_EV_TIMEOUT) ) {
             connection_cb(NET_EV_TIMEOUT,0,conn);
+        } else if( (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) && (ev & NET_EV_TIMEOUT_AND_CLOSE) ) {
+            // need to close this socket here
+            conn->pending_event = NET_EV_CLOSE;
         }
     }
     return 0;
@@ -580,10 +593,12 @@ int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
     // no need to worry about the problem returned by the select
 
     if( active_num >= 0 ) {
+        int w;
         if( time_diff == 0 )
             time_diff = 1;
+        w = dispatch(server,&read_set,&write_set,time_diff);
         if( wakeup != NULL )
-            *wakeup = dispatch(server,&read_set,&write_set,time_diff);
+            *wakeup = w;
     }
     // 4. reclaim all the socket that has marked it as CLOSE operation
     reclaim_socket(server);
