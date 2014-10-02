@@ -389,12 +389,14 @@ static int do_connected( struct net_connection_t* conn , int* error_code );
         if( *(mfd) < fd ) { *(mfd) = fd; } \
     }while(0)
 
-static void prepare_linger( struct net_connection_t* conn , fd_set* write , socket_t* max_fd ) {
+static int prepare_linger( struct net_connection_t* conn , fd_set* write , socket_t* max_fd ) {
     if( net_buffer_readable_size(&(conn->out)) ) {
         FD_SET(conn->socket_fd,write);
         if( *max_fd < conn->socket_fd )
             *max_fd = conn->socket_fd;
+        return 0;
     }
+    return -1;
 }
 
 static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int* millis , socket_t* max_fd ) {
@@ -412,24 +414,36 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
         }
         // read/write , connect , lingerXXX , close
         if( (conn->pending_event & NET_EV_READ) || (conn->pending_event & NET_EV_WRITE) ) {
+            assert( !(conn->pending_event & NET_EV_LINGER) &&
+                !(conn->pending_event & NET_EV_LINGER_SILENT) &&
+                !(conn->pending_event & NET_EV_CONNECT) &&
+                !(conn->pending_event & NET_EV_CLOSE) );
             if( conn->pending_event & NET_EV_READ ) {
                 ADD_FSET(read_set,conn->socket_fd,max_fd);
             }
             if( conn->pending_event & NET_EV_WRITE ) {
                 ADD_FSET(write_set,conn->socket_fd,max_fd);
             }
-            assert( !(conn->pending_event & NET_EV_LINGER) &&
-                !(conn->pending_event & NET_EV_LINGER_SILENT) &&
-                !(conn->pending_event & NET_EV_CONNECT) &&
-                !(conn->pending_event & NET_EV_CLOSE) );
         } else {
             if( (conn->pending_event & NET_EV_LINGER) || (conn->pending_event & NET_EV_LINGER_SILENT) ) {
-                prepare_linger(conn,write_set,max_fd);
                 assert( !(conn->pending_event & NET_EV_CONNECT) &&
                     !(conn->pending_event & NET_EV_CLOSE) );
+                if( prepare_linger(conn,write_set,max_fd) !=0 ) {
+                    if( conn->pending_event & NET_EV_TIMEOUT && conn->timeout >0 ) {
+                        conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
+                    } else {
+                        conn->pending_event = NET_EV_CLOSE;
+                    }
+                }
             } else if( conn->pending_event & NET_EV_CONNECT ) {
-                ADD_FSET(write_set,conn->socket_fd,max_fd);
                 assert( !(conn->pending_event & NET_EV_CLOSE) );
+                ADD_FSET(write_set,conn->socket_fd,max_fd);
+            } else {
+                // We just need to convert a NET_EV_CLOSE|NET_EV_TIMEOUT to
+                // internal NET_EV_TIMEOUT_AND_CLOSE operations
+                if( conn->pending_event & NET_EV_TIMEOUT && conn->timeout >0 ) {
+                    conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
+                }
             }
         }
     }

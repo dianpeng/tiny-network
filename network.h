@@ -32,14 +32,11 @@ enum {
     NET_EV_EOF   = 1 << 6 ,
     NET_EV_CONNECT = 1 << 7,
     NET_EV_TIMEOUT = 1 << 8,
-    // reserver the range , please do not use this bits
-
-    // error event
+    // error 
     NET_EV_ERR_READ = 1<<16,
     NET_EV_ERR_WRITE= 1<<17,
     NET_EV_ERR_ACCEPT=1<<18,
-    NET_EV_ERR_CONNECT = 1 << 19, // connection timeout
-    // connection
+    NET_EV_ERR_CONNECT = 1 << 19,
 
     NET_EV_NOT_LARGE_THAN = 1 << 20
 };
