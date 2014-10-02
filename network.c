@@ -402,8 +402,8 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
     // adding the whole connection that we already have to the sets
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         // timeout is a always configurable event
-        if( conn->pending_event & NET_EV_TIMEOUT || 
-            conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE ) {
+        if( (conn->pending_event & NET_EV_TIMEOUT) ||
+            (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
             if( conn->timeout >= 0 ) {
                 if( (*millis >=0 && *millis > conn->timeout) || *millis < 0 ) {
                     *millis = conn->timeout;
@@ -451,8 +451,8 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         ev = 0; ec = 0;
         // timeout
-        if( conn->pending_event & NET_EV_TIMEOUT || 
-            conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE ) {
+        if( (conn->pending_event & NET_EV_TIMEOUT) ||
+            (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
             if( conn->timeout <= time_diff ) {
                 ev |= (conn->pending_event & NET_EV_TIMEOUT) ? NET_EV_TIMEOUT : NET_EV_TIMEOUT_AND_CLOSE;
             } else {
@@ -510,7 +510,7 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
                 if( conn->pending_event & NET_EV_LINGER ) {
                     connection_cb(NET_EV_LINGER,ec,conn);
                 }
-                if( conn->pending_event & NET_EV_TIMEOUT && (conn->timeout >0) ) {
+                if( (conn->pending_event & NET_EV_TIMEOUT) && (conn->timeout >0) ) {
                     conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
                 } else {
                     conn->pending_event = NET_EV_CLOSE;
