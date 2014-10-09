@@ -441,7 +441,9 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
             } else {
                 // We just need to convert a NET_EV_CLOSE|NET_EV_TIMEOUT to
                 // internal NET_EV_TIMEOUT_AND_CLOSE operations
-                if( conn->pending_event & NET_EV_TIMEOUT && conn->timeout >0 ) {
+                if( conn->pending_event & NET_EV_CLOSE && 
+                    conn->pending_event & NET_EV_TIMEOUT && 
+                    conn->timeout >0 ) {
                     conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
                 }
             }
