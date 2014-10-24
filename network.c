@@ -1,7 +1,4 @@
 #include "network.h"
-#ifndef __APPLE__
-#include <malloc.h>
-#endif // __APPLE__
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
