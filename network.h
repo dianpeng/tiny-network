@@ -12,6 +12,7 @@ typedef int socklen_t;
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <unistd.h>
 typedef int socket_t;
 #define invalid_socket_handler -1
 #define closesocket close
@@ -32,7 +33,8 @@ enum {
     NET_EV_EOF   = 1 << 6 ,
     NET_EV_CONNECT = 1 << 7,
     NET_EV_TIMEOUT = 1 << 8,
-    // error 
+    NET_EV_IDLE = 1 << 15,
+    // error
     NET_EV_ERR_READ = 1<<16,
     NET_EV_ERR_WRITE= 1<<17,
     NET_EV_ERR_ACCEPT=1<<18,
@@ -63,7 +65,7 @@ struct net_connection_t {
     int pending_event;
     int timeout;
 };
-  
+
 struct net_server_t;
 
 typedef int (*net_acb_func)( int err_code , struct net_server_t* , struct net_connection_t* connection );
@@ -104,10 +106,12 @@ struct net_connection_t* net_fd( struct net_server_t* server , net_ccb_func cb ,
 
 // cancle another connection through struct net_connection_t* object , after this pointer is
 // invalid, so do not store this pointer after calling this function
-void net_cancel( struct net_connection_t* conn );
+void net_stop( struct net_connection_t* conn );
+void net_post( struct net_connection_t* conn , int ev );
 
 // buffer function
 void* net_buffer_consume( struct net_buffer_t* , size_t* );
+void* net_buffer_peek( struct net_buffer_t*  , size_t* );
 void net_buffer_produce( struct net_buffer_t* , const void* data , size_t );
 struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* );
 void net_buffer_free( struct net_buffer_t* );

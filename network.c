@@ -28,7 +28,7 @@ extern "C" {
 #else
 #define VERIFY(cond) do { \
     if(!cond) { \
-    fprintf(stderr,"die:" #cond); abort(); } while(0)
+    fprintf(stderr,"die:" #cond); abort(); }} while(0)
 #endif // NDEBUG
 
 #ifndef MULTI_SERVER_ENABLE
@@ -179,6 +179,19 @@ void* net_buffer_consume( struct net_buffer_t* buf , size_t* size ) {
         if( buf->consume_pos == buf->produce_pos ) {
             buf->consume_pos = buf->produce_pos = 0;
         }
+        *size = consume_size;
+        return ret;
+    }
+}
+
+void* net_buffer_peek( struct net_buffer_t*  buf , size_t* size ) {
+    int consume_size;
+    void* ret;
+    if( buf->mem == NULL ) { *size = 0 ; return NULL; }
+    else {
+        consume_size = min(*size,net_buffer_readable_size(buf));
+        if( consume_size == 0 ) { *size = 0 ; return NULL; }
+        ret = cast(char*,buf->mem) + buf->consume_pos;
         *size = consume_size;
         return ret;
     }
@@ -400,6 +413,8 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
     struct net_connection_t* conn;
     // adding the whole connection that we already have to the sets
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
+        if( conn->pending_event & NET_EV_IDLE )
+            continue;
         // timeout is a always configurable event
         if( (conn->pending_event & NET_EV_TIMEOUT) ||
             (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
@@ -426,11 +441,13 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
                 assert( !(conn->pending_event & NET_EV_CONNECT) &&
                     !(conn->pending_event & NET_EV_CLOSE) );
                 if( prepare_linger(conn,write_set,max_fd) !=0 ) {
-                    if( conn->pending_event & NET_EV_TIMEOUT && conn->timeout >0 ) {
-                        conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
-                    } else {
-                        conn->pending_event = NET_EV_CLOSE;
+                    if( conn->pending_event & NET_EV_LINGER ) {
+                        connection_cb(NET_EV_LINGER,0,conn);
                     }
+                    if( conn->pending_event & NET_EV_TIMEOUT && conn->timeout > 0 )
+                        conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
+                    else
+                        conn->pending_event = NET_EV_CLOSE;
                 }
             } else if( conn->pending_event & NET_EV_CONNECT ) {
                 assert( !(conn->pending_event & NET_EV_CLOSE) );
@@ -462,6 +479,8 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
     }
     // 3. looping through all the received events in the list
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
+        if( conn->pending_event & NET_EV_IDLE )
+            continue;
         ev = 0; ec = 0;
         // timeout
         if( (conn->pending_event & NET_EV_TIMEOUT) ||
@@ -710,7 +729,6 @@ socket_t net_block_client_connect( const char* addr ) {
     }
 }
 
-
 int net_non_block_client_connect(struct net_server_t* server ,
     const char* addr ,
     net_ccb_func cb ,
@@ -781,8 +799,12 @@ struct net_connection_t* net_fd( struct net_server_t* server, net_ccb_func cb , 
     return conn;
 }
 
-void net_cancel( struct net_connection_t* conn ) {
+void net_stop( struct net_connection_t* conn ) {
     conn->pending_event = NET_EV_CLOSE;
+}
+
+void net_post( struct net_connection_t* conn , int ev ) {
+    conn->pending_event = ev;
 }
 
 // platform problem
