@@ -12,12 +12,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/time.h>
-#endif // _WIN32
+#endif /* _WIN32 */
 
 
 #ifdef __cplusplus
 extern "C" {
-#endif // __cplusplus
+#endif /* __cplusplus */
 
 #define SERVER_CONTROL_DATA_LENGTH 128
 
@@ -29,7 +29,7 @@ extern "C" {
 #define VERIFY(cond) do { \
     if(!cond) { \
     fprintf(stderr,"die:" #cond); abort(); }} while(0)
-#endif // NDEBUG
+#endif /* NDEBUG */
 
 #ifndef MULTI_SERVER_ENABLE
 static char single_server_internal_buffer[MAXIMUM_IPV4_PACKET_SIZE];
@@ -39,9 +39,9 @@ static char single_server_internal_buffer[MAXIMUM_IPV4_PACKET_SIZE];
 
 #ifndef min
 #define min(x,y) ((x) < (y) ? (x) : (y))
-#endif // min
+#endif /* min */
 
-// Internal message for linger options
+/* Internal message for linger options */
 enum {
     NET_EV_TIMEOUT_AND_CLOSE = 1 << 10
 };
@@ -92,18 +92,18 @@ static void nb_socket( socket_t sock ) {
 #else
     int f = fcntl(sock, F_GETFL, 0);
     fcntl(sock, F_SETFL, f | O_NONBLOCK);
-#endif // _WIN32
+#endif /* _WIN32 */
 }
 
 static void reuse_socket( socket_t sock ) {
     int on = 1;
 #ifdef _WIN32
     setsockopt(sock,SOL_SOCKET,SO_EXCLUSIVEADDRUSE,cast(const char*,&on),sizeof(int));
-#endif // _WIN32
+#endif /* _WIN32 */
     setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,cast(const char*,&on),sizeof(int));
 }
 
-// platform error
+/* platform error */
 static int net_has_error() {
 #ifdef _WIN32
     int ret = WSAGetLastError();
@@ -143,11 +143,11 @@ static int get_time_millisec() {
 #endif
 }
 
-// buffer internal data structure
-// [--- write buffer -- -- extra ---]
-//       read_pos
-//                   write_pos
-//                                  capacity
+/* buffer internal data structure
+ * [--- write buffer -- -- extra ---]
+ *       read_pos
+ *                   write_pos
+ *                                  capacity */
 
 struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* buf ) {
     if( cap == 0 )
@@ -173,9 +173,9 @@ void* net_buffer_consume( struct net_buffer_t* buf , size_t* size ) {
         consume_size = min(*size,net_buffer_readable_size(buf));
         if( consume_size == 0 ) { *size = 0 ; return NULL; }
         ret = cast(char*,buf->mem) + buf->consume_pos;
-        // advance the internal read pointer
+        /* advance the internal read pointer */
         buf->consume_pos += consume_size;
-        // checking if we can rewind or not
+        /* checking if we can rewind or not */
         if( buf->consume_pos == buf->produce_pos ) {
             buf->consume_pos = buf->produce_pos = 0;
         }
@@ -199,12 +199,12 @@ void* net_buffer_peek( struct net_buffer_t*  buf , size_t* size ) {
 
 void net_buffer_produce( struct net_buffer_t* buf , const void* data , size_t size ) {
     if( buf->capacity < size + buf->produce_pos ) {
-        // We need to expand the memory
+        /* We need to expand the memory */
         size_t cap = size + buf->produce_pos;
         buf->mem = mem_realloc(buf->mem,cap);
         buf->capacity = cap;
     }
-    // Write the data to the buffer position
+    /* Write the data to the buffer position */
     memcpy(cast(char*,buf->mem) + buf->produce_pos , data , size);
     buf->produce_pos += size;
 }
@@ -235,7 +235,7 @@ static void net_buffer_consume_advance( struct net_buffer_t* buf , size_t size )
         (buf)->mem = NULL; \
     } while(0)
 
-// connection
+/* connection */
 static void connection_cb( int ev , int ec , struct net_connection_t* conn ) {
     if( conn->cb != NULL ) {
         conn->pending_event = conn->cb(ev,ec,conn);
@@ -254,8 +254,8 @@ static struct net_connection_t* connection_create( socket_t fd ) {
     return conn;
 }
 
-// we always add the connection to the end of the list since this will
-// make the newly added socket being inserted into the poll fdset quicker
+/* we always add the connection to the end of the list since this will
+ * make the newly added socket being inserted into the poll fdset quicker */
 #define connection_add(server,conn) \
     do { \
         conn->prev = server->conns.prev; \
@@ -266,7 +266,7 @@ static struct net_connection_t* connection_create( socket_t fd ) {
 
 static struct net_connection_t* connection_destroy( struct net_connection_t* conn ) {
     struct net_connection_t* ret = conn->prev;
-    // closing the underlying socket and this must be called at once
+    /* closing the underlying socket and this must be called at once */
     conn->prev->next = conn->next;
     conn->next->prev = conn->prev;
     net_buffer_free(&(conn->in));
@@ -283,7 +283,7 @@ static struct net_connection_t* connection_close( struct net_connection_t* conn 
     return ret;
 }
 
-// server
+/* server */
 int net_server_create( struct net_server_t* server, const char* addr , net_acb_func cb ) {
     struct sockaddr_in ipv4;
     server->conns.next = &(server->conns);
@@ -294,32 +294,32 @@ int net_server_create( struct net_server_t* server, const char* addr , net_acb_f
     if( addr != NULL ) {
         if( str_to_sockaddr(addr,&ipv4) != 0 )
             return -1;
-        // socket stream
+        /* socket stream */
         server->listen_fd = socket(AF_INET,SOCK_STREAM,0);
         if( server->listen_fd == invalid_socket_handler )
             return -1;
         nb_socket(server->listen_fd);
         exec_socket(server->listen_fd);
-        // reuse the addr
+        /* reuse the addr */
         reuse_socket(server->listen_fd);
-        // bind
+        /* bind */
         if( bind(server->listen_fd,cast(struct sockaddr*,&ipv4),sizeof(ipv4)) != 0 ) {
             closesocket(server->listen_fd);
             server->listen_fd = invalid_socket_handler;
             return -1;
         }
-        // listen
+        /* listen */
         if( listen(server->listen_fd,SOMAXCONN) != 0 ) {
             closesocket(server->listen_fd);
             return -1;
         }
     } else {
-        // We don't have a dedicated listen server here
+        /* We don't have a dedicated listen server here */
         server->cb = NULL;
         server->ctrl_fd = server->listen_fd = invalid_socket_handler;
     }
 
-    // control socket
+    /* control socket */
     server->ctrl_fd = socket(AF_INET,SOCK_DGRAM,0);
     if( server->ctrl_fd == invalid_socket_handler ) {
         if( server->listen_fd != invalid_socket_handler )
@@ -329,7 +329,7 @@ int net_server_create( struct net_server_t* server, const char* addr , net_acb_f
     nb_socket(server->ctrl_fd);
     exec_socket(server->ctrl_fd);
     memset(&ipv4,0,sizeof(ipv4));
-    // setting the localhost address for the ctrl udp
+    /* setting the localhost address for the ctrl udp */
     ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     ipv4.sin_family = AF_INET;
     ipv4.sin_port = htons(0);
@@ -345,7 +345,7 @@ int net_server_create( struct net_server_t* server, const char* addr , net_acb_f
     server->reserve_buffer = single_server_internal_buffer;
 #else
     server->reserve_buffer = mem_alloc(MAXIMUM_IPV4_PACKET_SIZE);
-#endif // MULTI_SERVER_ENABLE
+#endif /* MULTI_SERVER_ENABLE */
     return 0;
 }
 
@@ -371,7 +371,7 @@ void net_server_destroy( struct net_server_t* server ) {
 #ifdef MULTI_SERVER_ENABLE
     if( server->reserve_buffer != NULL )
         mem_free(server->reserve_buffer);
-#endif // MULTI_SERVER_ENABLE
+#endif /* MULTI_SERVER_ENABLE */
 }
 
 int net_server_wakeup( struct net_server_t* server ) {
@@ -411,11 +411,11 @@ static int prepare_linger( struct net_connection_t* conn , fd_set* write , socke
 
 static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int* millis , socket_t* max_fd ) {
     struct net_connection_t* conn;
-    // adding the whole connection that we already have to the sets
+    /* adding the whole connection that we already have to the sets */
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_IDLE )
             continue;
-        // timeout is a always configurable event
+        /* timeout is a always configurable event */
         if( (conn->pending_event & NET_EV_TIMEOUT) ||
             (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
             if( conn->timeout >= 0 ) {
@@ -424,7 +424,7 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
                 }
             }
         }
-        // read/write , connect , lingerXXX , close
+        /* read/write , connect , lingerXXX , close */
         if( (conn->pending_event & NET_EV_READ) || (conn->pending_event & NET_EV_WRITE) ) {
             assert( !(conn->pending_event & NET_EV_LINGER) &&
                 !(conn->pending_event & NET_EV_LINGER_SILENT) &&
@@ -453,8 +453,8 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
                 assert( !(conn->pending_event & NET_EV_CLOSE) );
                 ADD_FSET(write_set,conn->socket_fd,max_fd);
             } else {
-                // We just need to convert a NET_EV_CLOSE|NET_EV_TIMEOUT to
-                // internal NET_EV_TIMEOUT_AND_CLOSE operations
+                /* We just need to convert a NET_EV_CLOSE|NET_EV_TIMEOUT to
+                 * internal NET_EV_TIMEOUT_AND_CLOSE operations */
                 if( conn->pending_event & NET_EV_CLOSE && 
                     conn->pending_event & NET_EV_TIMEOUT && 
                     conn->timeout >0 ) {
@@ -468,21 +468,21 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
 static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int time_diff ) {
     struct net_connection_t* conn;
     int ev , rw , ret ,ec;
-    // 1. checking if we have control operation or not
+    /* 1. checking if we have control operation or not */
     if( FD_ISSET(server->ctrl_fd,read_set) ) {
         do_control(server);
         return 1;
     }
-    // 2. checking the accept operation is done or not
+    /* 2. checking the accept operation is done or not */
     if( server->listen_fd != invalid_socket_handler && FD_ISSET(server->listen_fd,read_set) ) {
         do_accept(server);
     }
-    // 3. looping through all the received events in the list
+    /* 3. looping through all the received events in the list */
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_IDLE )
             continue;
         ev = 0; ec = 0;
-        // timeout
+        /* timeout */
         if( (conn->pending_event & NET_EV_TIMEOUT) ||
             (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
             if( conn->timeout <= time_diff ) {
@@ -491,9 +491,9 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
                 conn->timeout -= time_diff;
             }
         }
-        // connect
+        /* connect */
         if( (conn->pending_event & NET_EV_CONNECT) && FD_ISSET(conn->socket_fd,write_set) ) {
-            // connection operation done, notify our user
+            /* connection operation done, notify our user */
             if( do_connected(conn,&ec) == 0 ) {
                 ev |= NET_EV_CONNECT;
                 connection_cb(ev,0,conn);
@@ -503,10 +503,10 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
             }
             continue;
         }
-        // read/write
+        /* read/write */
         if( (conn->pending_event & NET_EV_WRITE) || (conn->pending_event & NET_EV_READ) ) {
             rw = 0; ec = 0;
-            // checking read
+            /* checking read */
             if( (conn->pending_event & NET_EV_READ) && FD_ISSET(conn->socket_fd,read_set) ) {
                 ret = do_read(server,&ec,conn);
                 if( ret == 0 ) {
@@ -518,7 +518,7 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
                 }
                 ++rw;
             }
-            // checking write
+            /* checking write */
             if( !(ev & NET_EV_ERR_READ) && (conn->pending_event & NET_EV_WRITE) && FD_ISSET(conn->socket_fd,write_set) ) {
                 ret = do_write(conn,&ec);
                 if( ret < 0 ) {
@@ -528,11 +528,11 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
                 }
                 ++rw;
             }
-            // call the connection callback function here
+            /* call the connection callback function here */
             if( rw != 0 ) connection_cb(ev,ec,conn);
             continue;
         }
-        // linger
+        /* linger */
         if( ((conn->pending_event & NET_EV_LINGER) || (conn->pending_event & NET_EV_LINGER_SILENT)) && FD_ISSET(conn->socket_fd,write_set) ) {
             ec = 0;
             ret = do_write(conn,&ec);
@@ -550,11 +550,11 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
             }
             continue;
         }
-        // if we reach here means only timeout is specified
+        /* if we reach here means only timeout is specified */
         if( (conn->pending_event & NET_EV_TIMEOUT) && (ev & NET_EV_TIMEOUT) ) {
             connection_cb(NET_EV_TIMEOUT,0,conn);
         } else if( (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) && (ev & NET_EV_TIMEOUT_AND_CLOSE) ) {
-            // need to close this socket here
+            /* need to close this socket here */
             conn->pending_event = NET_EV_CLOSE;
         }
     }
@@ -563,7 +563,7 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
 
 static void reclaim_socket( struct net_server_t* server ) {
     struct net_connection_t* conn;
-    // reclaim all the socket that has marked it as CLOSE operation
+    /* reclaim all the socket that has marked it as CLOSE operation */
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_CLOSE ) {
             conn = connection_close(conn);
@@ -584,14 +584,14 @@ int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
     FD_ZERO(&read_set);
     FD_ZERO(&write_set);
 
-    // adding the listen_fd and ctrl_fd
+    /* adding the listen_fd and ctrl_fd */
     if( server->listen_fd != invalid_socket_handler )
         ADD_FSET(&read_set,server->listen_fd,&max_fd);
     ADD_FSET(&read_set,server->ctrl_fd,&max_fd);
 
     prepare_fd(server,&read_set,&write_set,&millis,&max_fd);
 
-    // setting the timer
+    /* setting the timer */
     if( millis >= 0 ) {
         tv.tv_sec = millis / 1000;
         tv.tv_usec = (millis % 1000) * 1000;
@@ -599,7 +599,7 @@ int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
 
     if( server->last_io_time == 0 )
         server->last_io_time = get_time_millisec();
-    // start our polling mechanism
+    /* start our polling mechanism */
     if( max_fd == invalid_socket_handler )
         max_fd = 0;
     active_num = select(max_fd+1,&read_set,&write_set,NULL,millis >= 0 ? &tv : NULL);
@@ -619,10 +619,10 @@ int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
         if( time_diff > 0 )
             server->last_io_time = cur_time;
     }
-    // if we have errno set to EWOULDBLOCK EINTER which typically
-    // require us to re-enter the loop, we don't need to do this
-    // what we need to do is just put this poll into the loop , so
-    // no need to worry about the problem returned by the select
+    /* if we have errno set to EWOULDBLOCK EINTER which typically
+     * require us to re-enter the loop, we don't need to do this
+     * what we need to do is just put this poll into the loop , so
+     * no need to worry about the problem returned by the select */
 
     if( active_num >= 0 ) {
         int w;
@@ -632,7 +632,7 @@ int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
         if( wakeup != NULL )
             *wakeup = w;
     }
-    // 4. reclaim all the socket that has marked it as CLOSE operation
+    /* 4. reclaim all the socket that has marked it as CLOSE operation */
     reclaim_socket(server);
     return return_num;
 }
@@ -698,7 +698,7 @@ static void do_control( struct net_server_t* server ) {
 static int do_connected( struct net_connection_t* conn , int* error_code ) {
     int val;
     socklen_t len = sizeof(int);
-    // before we do anything we need to check whether we have connected to the socket or not
+    /* before we do anything we need to check whether we have connected to the socket or not */
     getsockopt(conn->socket_fd,SOL_SOCKET,SO_ERROR,cast(char*,&val),&len);
     if( val != 0 ) {
         *error_code = val;
@@ -708,7 +708,7 @@ static int do_connected( struct net_connection_t* conn , int* error_code ) {
     }
 }
 
-// client function
+/* client function */
 socket_t net_block_client_connect( const char* addr ) {
     struct sockaddr_in ipv4;
     int ret;
@@ -740,7 +740,7 @@ int net_non_block_client_connect(struct net_server_t* server ,
         conn->user_data = udata;
         if( net_non_block_connect(conn,addr,timeout) == NET_EV_REMOVE ) {
             if( conn->socket_fd == invalid_socket_handler ) {
-                // error
+                /* error */
                 connection_close(conn);
                 return -1;
             }
@@ -778,7 +778,7 @@ int net_non_block_connect( struct net_connection_t* conn , const char* addr , in
     return conn->pending_event;
 }
 
-// timer and socket
+/* timer and socket */
 struct net_connection_t* net_timer( struct net_server_t* server , net_ccb_func cb , void* udata , int timeout ) {
     struct net_connection_t* conn = connection_create(invalid_socket_handler);
     connection_add(server,conn);
@@ -807,14 +807,115 @@ void net_post( struct net_connection_t* conn , int ev ) {
     conn->pending_event = ev;
 }
 
-// platform problem
+/* platform problem */
 void net_init() {
 #ifdef _WIN32
     WSADATA data;
     WSAStartup(MAKEWORD(2, 2), &data);
-#endif // _WIN32
+#endif /* _WIN32 */
 }
+
+/* Web Socket Implementation */
+
+/* Base64 encode/decode */
+
+static
+size_t b64_encode( const char *src, size_t src_len, char *dst ) {
+    static const char *B64LOOKUP =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t i, j;
+    int b1,b2,b3;
+    const unsigned char* usrc = (const unsigned char*)(src);
+
+    for ( i = j = 0; i < src_len; i += 3 ) {
+        b1 = usrc[i];
+        b2 = i + 1 >= src_len ? 0 : usrc[i + 1];
+        b3 = i + 2 >= src_len ? 0 : usrc[i + 2];
+
+        dst[j++] = B64LOOKUP[b1 >> 2];
+        dst[j++] = B64LOOKUP[((b1 & 3) << 4) | (b2 >> 4)];
+        if (i + 1 < src_len) {
+            dst[j++] = B64LOOKUP[(b2 & 15) << 2 | (b3 >> 6)];
+        }
+        if (i + 2 < src_len) {
+            dst[j++] = B64LOOKUP[b3 & 63];
+        }
+    }
+
+    /* tail */
+    switch( j % 4 ) {
+    case '2':
+        dst[j+1] = '=';
+        dst[j+2] = '=';
+        j += 2;
+        break;
+    case '3':
+        dst[j+1] = '=';
+        ++j;
+        break;
+    default:
+        break;
+    }
+    /* done */
+    return j;
+}
+
+int b64_decode( const char *src, size_t src_len, char *dst , size_t dst_len ) {
+    static char B64LOOKUP[] = {
+        255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,62, 
+        255, 255, 255,63,52, 53, 54, 55, 56, 57, 58, 
+        59, 60, 61, 255, 255, 255, 254, /* = */
+        255, 255, 255, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+        10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25, 
+        255, 255, 255, 255, 255, 255, 26,27,28,29,30,31,
+        32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
+        48,49,50,51, 255, 255, 255, 255, 
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255
+    };
+
+    unsigned char b1,b2,b3,b4;
+    char* sdst = dst;
+
+    while( src_len >=4 && 
+          (b1 = B64LOOKUP[src[0]]) != 255 &&
+          (b2 = B64LOOKUP[src[1]]) != 255 &&
+          (b3 = B64LOOKUP[src[2]]) != 255 && 
+          (b4 = B64LOOKUP[src[3]]) != 255 ) {
+        /* rule out the broken stream here */
+        if( b1 == 254 || b2 == 254 ) 
+            return -1; 
+
+        *dst = b1 << 2 | b2 >> 4;
+        /* = */
+        if (b3 == 254) break;
+        *dst++ = b2 << 4 | b3 >> 2;
+        /* = */
+        if (b4 == 254) break;
+
+        *dst++ = b3 << 6 | b4;
+        
+        src_len -= 4;
+        src+=4;
+    }
+
+    /* done */
+    return dst - sdst;
+}
+
 
 #ifdef __cplusplus
 }
-#endif // __cplusplus
+#endif /* __cplusplus */

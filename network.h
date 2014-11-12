@@ -16,11 +16,11 @@ typedef int socklen_t;
 typedef int socket_t;
 #define invalid_socket_handler -1
 #define closesocket close
-#endif // _WIN32
+#endif /* _WIN32 */
 
 #ifdef __cplusplus
 extern "C" {
-#endif // __cplusplus
+#endif /* __cplusplus */
 
 enum {
     NET_EV_NULL  = 0,
@@ -34,7 +34,7 @@ enum {
     NET_EV_CONNECT = 1 << 7,
     NET_EV_TIMEOUT = 1 << 8,
     NET_EV_IDLE = 1 << 15,
-    // error
+    /* error code */
     NET_EV_ERR_READ = 1<<16,
     NET_EV_ERR_WRITE= 1<<17,
     NET_EV_ERR_ACCEPT=1<<18,
@@ -59,8 +59,8 @@ struct net_connection_t {
     struct net_connection_t* prev;
     void* user_data;
     socket_t socket_fd;
-    struct net_buffer_t in; // in buffer is the buffer for reading
-    struct net_buffer_t out;// out buffer is the buffer for sending
+    struct net_buffer_t in; /* in buffer is the buffer for reading */
+    struct net_buffer_t out;/* out buffer is the buffer for sending */
     net_ccb_func cb;
     int pending_event;
     int timeout;
@@ -82,16 +82,16 @@ struct net_server_t {
 
 void net_init();
 
-// server function
+/* server function */
 int net_server_create( struct net_server_t* , const char* addr , net_acb_func cb );
 void net_server_destroy( struct net_server_t* );
 int net_server_poll( struct net_server_t* ,int , int* );
 int net_server_wakeup( struct net_server_t* );
 
-// client function
+/* client function */
 socket_t net_block_client_connect( const char* addr );
 
-// connect to a specific server
+/* connect to a specific server */
 int net_non_block_client_connect( struct net_server_t* server ,
     const char* addr ,
     net_ccb_func cb ,
@@ -100,16 +100,16 @@ int net_non_block_client_connect( struct net_server_t* server ,
 
 int net_non_block_connect( struct net_connection_t* conn , const char* addr , int timeout );
 
-// timer and other socket function
+/* timer and other socket function */
 struct net_connection_t* net_timer( struct net_server_t* server , net_ccb_func cb , void* udata , int timeout );
 struct net_connection_t* net_fd( struct net_server_t* server , net_ccb_func cb , void* udata , socket_t fd , int pending_event );
 
-// cancle another connection through struct net_connection_t* object , after this pointer is
-// invalid, so do not store this pointer after calling this function
+/* cancle another connection through struct net_connection_t* object , after this pointer is 
+ * invalid, so do not store this pointer after calling this function */
 void net_stop( struct net_connection_t* conn );
 void net_post( struct net_connection_t* conn , int ev );
 
-// buffer function
+/* buffer function */
 void* net_buffer_consume( struct net_buffer_t* , size_t* );
 void* net_buffer_peek( struct net_buffer_t*  , size_t* );
 void net_buffer_produce( struct net_buffer_t* , const void* data , size_t );
@@ -117,6 +117,45 @@ struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* );
 void net_buffer_free( struct net_buffer_t* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
+
+
+/* web socket helper function and data structure */
+typedef int (*net_ws_cb)( int, int, struct net_ws_connection_t* );
+
+struct net_ws_connection_t {
+    struct net_connection_t* ns_conn;
+    int pending_event;
+    int timeout;
+    void* user_data;
+    net_buffer_t out,in;
+    net_ws_cb cb;
+};
+
+/* for server */
+struct net_ws_connection_t* net_set_conn_to_ws( 
+    struct net_connection_t* ,
+    net_ws_cb cb,
+    int ev );
+
+/* for client */
+socket_t net_ws_block_client_connect( const char* addr );
+
+/* non blocking version */
+int net_ws_non_block_client_connect(
+    const char* addr , struct net_connection_t* conn , net_ws_cb cb );
+
+/* shutdown the _web_socket_ connection and 
+ * resume to the original transport protocol */
+int net_ws_shutdown( struct net_ws_connection_t* conn , net_ccb_func cb );
+
+void net_ws_stop( struct net_ws_connection_t* conn );
+
+/* for replacing send/recv system call */
+int net_ws_send_frame( socket_t , void* , int len );
+int net_ws_recv_frame( socket_t , void* , int len );
+
+
+
 
 #ifdef __cplusplus
 }
