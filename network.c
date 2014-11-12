@@ -916,6 +916,71 @@ int b64_decode( const char *src, size_t src_len, char *dst , size_t dst_len ) {
 }
 
 
+#define MAX_HOST_NAME 256
+#define MAX_DIR_NAME 256
+#define MAX_HTTP_HEADER_LINE 15
+
+struct ws_cli_handshake {
+    char ws_key[16];
+    char host[MAX_HOST_NAME];
+    char dir [MAX_DIR_NAME];
+    /* bits field for status information */
+    unsigned char http_header: 1;
+    unsigned char upgrade: 1;
+    unsigned char connection: 1;
+    unsigned char ws_version:1;
+    unsigned char line_num:4; /* the 4 bits is used for storing HTTP line number 
+                               * which is way more than enough for web socket */
+};
+
+#define INITIALIZE_WS_CLI_HANDSHAKE(c) \
+    do { \
+        (c)->ws_key[0] = 0; \
+        (c)->host[0] = 0; \
+        (c)->dir[0] = 0; \
+        (c)->http_header= 0; \
+        (c)->upgrade=0; \
+        (c)->connection=0; \
+        (c)->ws_version=0; \
+        (c)->line_num = 0; \
+    } while(0)
+
+/* 
+ * Our parsing routine just trying find out the related field inside of the
+ * header, once everything is collected, we are trying to find out the EOF
+ */
+
+static
+int _http_readline( void* data , size_t len ) {
+    /* read until /r/n is find out */
+    int i = 0;
+    const char* c= (const char*)(data);
+    for ( ; i < len ; ++i )
+        if ( c[i] == '/r' && (i+1 < len && c[i+1]== '/n') )
+            return i+2;
+    return -1;
+}
+
+static
+int _http_parse_first_line( void* data , size_t end , char* dir ) {
+
+}
+
+static 
+int _parse_ws_cli_handshake( void* data , size_t len , struct ws_cli_handshake* hs ) {
+    int ln = _http_readline(data,len);
+    if (ln == -1)
+        return -1;
+    /* at least we have one line of HTTP content */
+    if( hs->line_num == 0 ) {
+        /* The first line must be the HTTP request/response line */
+
+    }
+}
+
+
+
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
