@@ -485,7 +485,7 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
         // timeout
         if( (conn->pending_event & NET_EV_TIMEOUT) ||
             (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
-            if( conn->timeout <= time_diff ) {
+            if( conn->timeout <= time_diff || conn->timeout == 0 ) {
                 ev |= (conn->pending_event & NET_EV_TIMEOUT) ? NET_EV_TIMEOUT : NET_EV_TIMEOUT_AND_CLOSE;
             } else {
                 conn->timeout -= time_diff;
