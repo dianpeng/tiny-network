@@ -54,16 +54,24 @@ struct net_connection_t;
 
 typedef int (*net_ccb_func)( int , int , struct net_connection_t* );
 
+enum {
+    NET_TCP,
+    NET_SSL,
+    NET_WEBSOCKET
+};
+
 struct net_connection_t {
-    struct net_connection_t* next;
-    struct net_connection_t* prev;
+    struct net_connection_t* next; /* private field */
+    struct net_connection_t* prev; /* private field */
     void* user_data;
     socket_t socket_fd;
     struct net_buffer_t in; /* in buffer is the buffer for reading */
     struct net_buffer_t out;/* out buffer is the buffer for sending */
     net_ccb_func cb;
-    int pending_event;
+    int pending_event;     /* private field */
     int timeout;
+    int protocol;         /* readonly */
+    int priv_proto_ev;     /* private field */
 };
 
 struct net_server_t;
@@ -78,6 +86,8 @@ struct net_server_t {
     net_acb_func cb;
     int last_io_time;
     void* reserve_buffer;
+    int protocol;          /* readonly */
+    int priv_proto_ev;     /* private field */
 };
 
 void net_init();
@@ -117,44 +127,6 @@ struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* );
 void net_buffer_free( struct net_buffer_t* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
-
-
-/* web socket helper function and data structure */
-typedef int (*net_ws_cb)( int, int, struct net_ws_connection_t* );
-
-struct net_ws_connection_t {
-    struct net_connection_t* ns_conn;
-    int pending_event;
-    int timeout;
-    void* user_data;
-    net_buffer_t out,in;
-    net_ws_cb cb;
-};
-
-/* for server */
-struct net_ws_connection_t* net_set_conn_to_ws( 
-    struct net_connection_t* ,
-    net_ws_cb cb,
-    int ev );
-
-/* for client */
-socket_t net_ws_block_client_connect( const char* addr );
-
-/* non blocking version */
-int net_ws_non_block_client_connect(
-    const char* addr , struct net_connection_t* conn , net_ws_cb cb );
-
-/* shutdown the _web_socket_ connection and 
- * resume to the original transport protocol */
-int net_ws_shutdown( struct net_ws_connection_t* conn , net_ccb_func cb );
-
-void net_ws_stop( struct net_ws_connection_t* conn );
-
-/* for replacing send/recv system call */
-int net_ws_send_frame( socket_t , void* , int len );
-int net_ws_recv_frame( socket_t , void* , int len );
-
-
 
 
 #ifdef __cplusplus
