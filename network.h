@@ -54,12 +54,6 @@ struct net_connection_t;
 
 typedef int (*net_ccb_func)( int , int , struct net_connection_t* );
 
-enum {
-    NET_TCP,
-    NET_SSL,
-    NET_WEBSOCKET
-};
-
 struct net_connection_t {
     struct net_connection_t* next; /* private field */
     struct net_connection_t* prev; /* private field */
@@ -70,8 +64,6 @@ struct net_connection_t {
     net_ccb_func cb;
     int pending_event;     /* private field */
     int timeout;
-    int protocol;         /* readonly */
-    int priv_proto_ev;     /* private field */
 };
 
 struct net_server_t;
@@ -86,8 +78,6 @@ struct net_server_t {
     net_acb_func cb;
     int last_io_time;
     void* reserve_buffer;
-    int protocol;          /* readonly */
-    int priv_proto_ev;     /* private field */
 };
 
 void net_init();
@@ -124,9 +114,39 @@ void* net_buffer_consume( struct net_buffer_t* , size_t* );
 void* net_buffer_peek( struct net_buffer_t*  , size_t* );
 void net_buffer_produce( struct net_buffer_t* , const void* data , size_t );
 struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* );
-void net_buffer_free( struct net_buffer_t* );
+void net_buffer_clean( struct net_buffer_t* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
+
+
+/* =================================
+ * Web socket 
+ * ================================*/
+
+#define NETWORK_MAX_WEBSOCKET_MESSAGE_LENGTH 1024*1024 /* 1MB for a single message package */
+
+/* The user should pay attention to the truth that :
+ * If an accept callback receive NET_EV_CONNECT, it means the server side
+ * handshake has been sent out ; the connected callback receive a NET_EV_CONNECT
+ * means the server side handshake package has been received and verified */
+
+struct net_ws_conn_t;
+typedef int (*net_ws_callback)( int ev , int ec , struct net_ws_conn_t* );
+struct net_ws_conn_t* net_websocket_create( struct net_connection_t* conn , 
+                                                   net_ws_callback cb , 
+                                                   void* data );
+
+void net_websocket_destroy( struct net_ws_conn_t* conn );
+
+void* net_ws_get_udata( struct net_ws_conn_t* ws );
+void net_ws_set_udata( struct net_ws_conn_t* ws , void* data );
+
+/* this memory needs to be freed after using it */
+void* net_ws_recv( struct net_ws_conn_t* ws , size_t* len );
+
+/* send the data out to the peer side */
+int net_ws_send( void* data , size_t len , size_t ppsz , int copy );
+
 
 
 #ifdef __cplusplus

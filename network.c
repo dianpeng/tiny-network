@@ -6,12 +6,19 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 #ifndef _WIN32
 #include <sys/select.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/time.h>
+#endif /* _WIN32 */
+
+#ifdef _WIN32
+#define strccamp stricmp
+#else
+#define strccamp strcasecmp
 #endif /* _WIN32 */
 
 
@@ -37,9 +44,13 @@ static char single_server_internal_buffer[MAXIMUM_IPV4_PACKET_SIZE];
 
 #define cast(x,p) ((x)(p))
 
-#ifndef min
-#define min(x,y) ((x) < (y) ? (x) : (y))
+#ifndef MIN
+#define MIN(x,y) ((x) < (y) ? (x) : (y))
 #endif /* min */
+
+#ifndef MAX
+#define MAX(x,y) ((x) > (y) ? (x) : (y))
+#endif /* MAX */
 
 /* Internal message for linger options */
 enum {
@@ -149,6 +160,7 @@ static int get_time_millisec() {
  *                   write_pos
  *                                  capacity */
 
+
 struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* buf ) {
     if( cap == 0 )
         buf->mem = NULL;
@@ -159,7 +171,7 @@ struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* buf ) 
     return buf;
 }
 
-void net_buffer_free( struct net_buffer_t* buf ) {
+void net_buffer_clean( struct net_buffer_t* buf ) {
     if(buf->mem)
         mem_free(buf->mem);
     buf->consume_pos = buf->produce_pos = buf->capacity = 0;
@@ -170,7 +182,7 @@ void* net_buffer_consume( struct net_buffer_t* buf , size_t* size ) {
     void* ret;
     if( buf->mem == NULL ) { *size = 0 ; return NULL; }
     else {
-        consume_size = min(*size,net_buffer_readable_size(buf));
+        consume_size = MIN(*size,net_buffer_readable_size(buf));
         if( consume_size == 0 ) { *size = 0 ; return NULL; }
         ret = cast(char*,buf->mem) + buf->consume_pos;
         /* advance the internal read pointer */
@@ -189,7 +201,7 @@ void* net_buffer_peek( struct net_buffer_t*  buf , size_t* size ) {
     void* ret;
     if( buf->mem == NULL ) { *size = 0 ; return NULL; }
     else {
-        consume_size = min(*size,net_buffer_readable_size(buf));
+        consume_size = MIN(*size,net_buffer_readable_size(buf));
         if( consume_size == 0 ) { *size = 0 ; return NULL; }
         ret = cast(char*,buf->mem) + buf->consume_pos;
         *size = consume_size;
@@ -236,6 +248,7 @@ static void net_buffer_consume_advance( struct net_buffer_t* buf , size_t size )
     } while(0)
 
 /* connection */
+
 static void connection_cb( int ev , int ec , struct net_connection_t* conn ) {
     if( conn->cb != NULL ) {
         conn->pending_event = conn->cb(ev,ec,conn);
@@ -269,8 +282,8 @@ static struct net_connection_t* connection_destroy( struct net_connection_t* con
     /* closing the underlying socket and this must be called at once */
     conn->prev->next = conn->next;
     conn->next->prev = conn->prev;
-    net_buffer_free(&(conn->in));
-    net_buffer_free(&(conn->out));
+    net_buffer_clean(&(conn->in));
+    net_buffer_clean(&(conn->out));
     mem_free(conn);
     return ret;
 }
@@ -1092,21 +1105,20 @@ void SHA1_Final(SHA1_CTX* context, uint8_t digest[SHA1_DIGEST_SIZE])
 
 #define MAX_HOST_NAME 256
 #define MAX_DIR_NAME 256
-#define MAX_HTTP_HEADER_LINE 15
+#define MAX_HTTP_HEADER_LINE 31
+static const char* WS_KEY_COOKIE="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /* This object is _SENT_ from client but it needs to parsed out by server */
-
-struct ws_cli_handshake {
+struct ws_cli_handshake_t {
     char ws_key[16];
     char host[MAX_HOST_NAME];
     char dir [MAX_DIR_NAME];
     /* bits field for status information */
-    unsigned char http_header: 1;
     unsigned char upgrade: 1;
     unsigned char connection: 1;
     unsigned char ws_version:1;
-    unsigned char line_num:4; /* the 4 bits is used for storing HTTP line number 
-                            * which is way more than enough for web socket */
+    unsigned char line_num:5; /* the 5 bits is used for storing HTTP line number 
+                               * which is way more than enough for web socket */
 };
 
 #define INITIALIZE_WS_CLI_HANDSHAKE(c) \
@@ -1114,7 +1126,6 @@ struct ws_cli_handshake {
         (c)->ws_key[0] = 0; \
         (c)->host[0] = 0; \
         (c)->dir[0] = 0; \
-        (c)->http_header= 0; \
         (c)->upgrade=0; \
         (c)->connection=0; \
         (c)->ws_version=0; \
@@ -1123,24 +1134,44 @@ struct ws_cli_handshake {
 
 /* 
  * Our parsing routine just trying find out the related field inside of the
- * header, once everything is collected, we are trying to find out the EOF
+ * header, once everything is collected, we are trying to find out the EOL,
+ * If a EOF is found, the eof will be set to 1
  */
 
 static
-int _http_readline( const char* c , size_t len ) {
+int http_readline( const char* c , size_t len , int* eof ) {
     /* read until /r/n is find out */
     size_t i = 0;
+    *eof = 0;
     for ( ; i < len ; ++i )
-        if ( c[i] == '/r' && (i+1 < len && c[i+1]== '/n') )
-            return (int)(i+2);
+        if ( c[i] == '\r' && (i+1 < len && c[i+1]== '\n') ) {
+            i+=2;
+            if( (i < len && c[i] == '\r') && (i+1 < len && c[i+1]== '\n') ) {
+                *eof = 1;
+            }
+            return i;
+        }
     return -1;
 }
 
 /* Websocket server side HTTP part operation */
+enum {
+    WS_UNKNOWN_METHOD = -1,
+    WS_NOT_SUPPORT_HTTP_VERSION = -2,
+    WS_TOO_LARGE_URI = -3,
+    WS_UNKNOWN_UPGRADE_VALUE = -4,
+    WS_UNKNOWN_CONNECTION_VALUE = -5,
+    WS_UNKNOWN_WS_VERSION = -6,
+    WS_UNKNOWN_WS_KEY = -7,
+    WS_TOO_LARGE_HOST = -8,
+    WS_UNKNOWN_HOST = -9,
+    WS_TOO_LARGE_HTTP_HEADER = -10,
+    WS_UNKNOWN_REQUEST_HEADER = -11
+};
 
 /* Parsing the very first line of HTTP header */
 static
-int _http_ser_check_first_line( const char* data , size_t len , char* dir ) {
+int http_ser_check_first_line( const char* data , size_t len , char* dir ) {
     enum {
         METHOD,
         URI,
@@ -1154,16 +1185,18 @@ int _http_ser_check_first_line( const char* data , size_t len , char* dir ) {
         switch(state) {
         case METHOD:
             if (end-data <4)
-                return -1;
+                return WS_UNKNOWN_METHOD;
             if (data[0] == 'G'&&data[1] == 'E'&&data[2] == 'T')
                 data+=4; /* skip the extra space */
+            else
+                return WS_UNKNOWN_METHOD;
             state = URI;
             break;
         case URI: {
             /* we don't parse URI, but instead , just find the first space */
             const char* p = strchr(data,' ');
             if ( p-data >= MAX_DIR_NAME )
-                return -1;
+                return WS_TOO_LARGE_URI;
             else {
                 memcpy(dir,data,p-data+1);
             }
@@ -1181,74 +1214,395 @@ int _http_ser_check_first_line( const char* data , size_t len , char* dir ) {
                     data[4] == ' ' && data[5] == '1' && data[6] == '.' ) {
                         int x = data[7] - '0';
                         /* minimum websocket needs 1.1 */
-                        if( x >= 1 )
+                        if( x == 1 )
                             return 0;
                         else
-                            return -1;
+                            return WS_NOT_SUPPORT_HTTP_VERSION;
                 }
-                return -1;
+                return WS_NOT_SUPPORT_HTTP_VERSION;
             }
         default: assert(0);return-1;
         }
     }
 }
 
+/* We politely skip the whitespace although RFC doesn't show any evidence 
+ * to allow such behavior */
+static int http_strcmp( const char* lhs , const char* rhs ) {
+    int i = 0;
+    for( ; lhs[i] ; ++i ) {
+        if( !isspace(lhs[i]) )
+            return strcmp( lhs+i,rhs );
+    }
+    return -1;
+}
+
 /*
  * return value:
- * 0 represent pending states
+ * 0 represent we are done
  * positive number means how many data has been consumed
  * -1 represent error 
- * 4 headers are supported here(HARDCODE):
+ * 6 headers are supported here(HARDCODE):
+ * Host:
  * Upgrade:
  * Connection:
  * Sec-WebSocket-Version
  * Sec-WebSocket-Key
+ * Set-Cookie
  */
 
 static 
-int _http_ser_parse( const char* data , size_t len , struct ws_cli_handshake* hs ) {
+int http_ser_parse( const char* data , size_t len , struct ws_cli_handshake_t* hs ) {
     const char* s = data;
-    while(1) {
-        int num = _http_readline(data,len);
+    int eof;
+
+    do {
+        int num = http_readline(data,len,&eof);
         if (num == -1)
-            return 0;
+            return data-s;
         /* we have at least one line data now */
         if ( hs->line_num == 0 ) {
+            int ret;
             /* do a small modification here */
-            char* mc = (char*)(data);
-            mc[num-2] = 0;
-            if( _http_ser_check_first_line(mc,num-2,&hs->dir) != 0 ) {
-                return -1;
-            } 
-            mc[num-2] = '\r';
-            data += num;
-            continue;
+            cast(char*,data)[num-2] = 0;
+            ret = http_ser_check_first_line(data,num-2,hs->dir);
+            if( ret != 0 )
+                return ret;
+            cast(char*,data)[num-2] = '\r';
         } else {
             const char* semicon;
-            char* mc = (char*)(data);
-            mc[num-2] = 0;
-            semicon = strchr(mc,':');
-            (*(char*)(semicon)) = 0;
+            cast(char*,data)[num-2] = 0;
+            semicon = strchr(data,':');
+            *cast(char*,semicon) = 0;
 
-            if( strcmp(data,"Upgrade") == 0 ) {
-                if( strcmp(semicon+1,"websocket") != 0 )
-                    return -1;
+            if( strccamp(data,"Upgrade") == 0 ) {
+                if( hs->upgrade || http_strcmp(semicon+1,"websocket") != 0 )
+                    return WS_UNKNOWN_UPGRADE_VALUE;
+                hs->upgrade = 1;
                 goto again;
-            } else if ( strcmp(data,"Connection") == 0 ) {
-                if( strcmp(semicon+1,"Upgrade") != 0 )
-                    return -1;
+            } else if ( strccamp(data,"Connection") == 0 ) {
+                if( hs->connection ||http_strcmp(semicon+1,"Upgrade") != 0 )
+                    return WS_UNKNOWN_CONNECTION_VALUE;
+                hs->connection = 1;
                 goto again;
-            } else if( strcmp(data,"Sec-WebSocket-Version") == 0 ) {
-                if( strcmp(semicon+1,"13") != 0 )
-                    return -1;
+            } else if( strccamp(data,"Sec-WebSocket-Version") == 0 ) {
+                if( hs->ws_version || http_strcmp(semicon+1,"13") != 0 )
+                    return WS_UNKNOWN_WS_VERSION;
+                hs->ws_version = 1;
                 goto again;
-            } else if( strcmp(data,"Sec-WebSocket-Key") == 0 ) {
-                /* store the key */
-                if( )
+            } else if( strccamp(data,"Sec-WebSocket-Key") == 0 ) {
+                int i = 1;
+                if( hs->ws_key[0] )
+                    return WS_UNKNOWN_WS_KEY;
+                /* find the start of the key by skipping potential whitespace */
+                for( ; semicon[i] ; ++i ) {
+                    if( !isspace(semicon[i]) )
+                        break;
+                }
+                /* now we can copy the key into the buffer now */
+                if( strlen(semicon+i) < 16 )
+                    return WS_UNKNOWN_WS_KEY;
+                memcpy( hs->ws_key , semicon , 16 );
+                goto again;
+            } else if( strccamp(data,"Host") == 0 ) {
+                int i = 1;
+                if( hs->host[0] )
+                    return WS_UNKNOWN_HOST;
+                for( ; semicon[i] ; ++i ) {
+                    if( !isspace(semicon[i]) )
+                        break;
+                }
+                /* too large host name */
+                if( strlen(semicon+i) >= MAX_HOST_NAME )
+                    return WS_TOO_LARGE_HOST;
+                strcpy(hs->host,semicon+i);
+                goto again;
+            } else {
+                /* skip all the other header , pay attention, we skip the ORIGIN
+                 * header attribute since we don't do any security check here */
+                goto loop;
             }
+again:      /* for quick skip the next if-else chain and also recover the string */
+            cast(char*,data)[num-2] = '\r';
+            *cast(char*,semicon) = ':';
         }
+loop:   /* move to next line, hopefully */
+        data += num;
+        ++hs->line_num;
+        if( hs->line_num == MAX_HTTP_HEADER_LINE ) {
+            return WS_TOO_LARGE_HTTP_HEADER;
+        }
+    } while( !eof );
+
+    /* checking the EOF problem */
+    if( hs->upgrade && hs->connection && hs->ws_version && hs->ws_key[0] && hs->host[0] ) {
+        return 0;
+    } else {
+        return WS_UNKNOWN_REQUEST_HEADER;
     }
 }
+
+/* Generate Websocket reply for successful upgrade */
+static
+size_t http_ser_reply( struct ws_cli_handshake_t* hs , char ret[1024] ) {
+    static const char* WS_FORMAT = \
+        "HTTP/1.1 101 Switching Protocols\r\n" \
+        "Upgrade:websocket\r\n" \
+        "Connection:Upgrade\r\n" \
+        "Sec-WebSocket-Accept:";
+
+    static const size_t WS_FORMAT_LEN = strlen(WS_FORMAT);
+
+    char buf[128];
+    SHA1_CTX shal_ctx;
+    uint8_t digest[SHA1_DIGEST_SIZE];
+    size_t len = cast(size_t, sprintf(buf,"%s%s",hs->ws_key,WS_KEY_COOKIE) );
+
+    /* shal1 these key */
+    SHA1_Init(&shal_ctx);
+    SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),len);
+    SHA1_Final(&shal_ctx,digest);
+
+    /* encode it into base64 */
+    len = b64_encode(cast(const char*,digest),SHA1_DIGEST_SIZE,buf);
+    assert( len + WS_FORMAT_LEN + 4 < 1024 );
+
+    /* now write to the output buffer */
+
+    memcpy(ret,WS_FORMAT,WS_FORMAT_LEN);
+    memcpy(ret+WS_FORMAT_LEN,buf,len);
+
+    ret[WS_FORMAT_LEN+len+1]= '\r';
+    ret[WS_FORMAT_LEN+len+2]= '\n';
+    ret[WS_FORMAT_LEN+len+3]= '\r';
+    ret[WS_FORMAT_LEN+len+4]= '\n';
+
+    return len + 4 + WS_FORMAT_LEN;
+}
+
+
+/* This data structure represent a data frame on the wire for WS 
+ * We notify the user at least we know the header length */
+enum {
+    WS_TEXT = 1 , /* unsupported , dumb RFC definition */
+    WS_BINARY=2 , /* supported */
+    /* reserved 3-7 */
+    WS_CLOSE = 8 ,
+    WS_PING  = 9 ,
+    WS_PONG  = 10,
+    /* reserved 11-15 */
+    SIZE_OF_WS_FRAME_TYPE
+};
+
+enum {
+    WS_FP_FIRST_BYTE,
+    WS_FP_LENGTH,
+    WS_FP_LENGTH_MID,
+    WS_FP_LENGTH_LONG,
+    WS_FP_MASK,
+    WS_FP_PAYLOAD,
+    WS_FP_DONE
+};
+
+enum {
+    WS_FP_ERR_RESERVE_BIT = -1,
+    WS_FP_ERR_NOT_SUPPORT_FRAME = -2 ,
+    WS_FP_ERR_TOO_LARGE_PAYLOAD = -3
+};
+
+struct ws_frame_t {
+    unsigned char op :4;
+    unsigned char fin:1;
+    unsigned char m:3;
+    char mask[4];
+    /* the maximum possible length of a package size which is DUMB */
+    uint64_t data_len;
+    void* data;
+    size_t data_sz;
+    /* private area for frame parser */
+    int state;
+};
+
+#define INITIALIZE_WS_FRAME(fr) \
+    do { \
+        (fr)->state = WS_FP_FIRST_BYTE; \
+    } while(0)
+
+/* this ws frame parser is a stream parser, feed it as small as 1 byte
+ * will also produce valid result and not hurt any other one */
+static 
+int ws_frame_parse( const char* data , size_t len , struct ws_frame_t* fr ) {
+    const char* s = data;
+    char byte;
+    size_t l;
+
+    assert(len >0);
+
+    do {
+        switch(fr->state) {
+        case WS_FP_FIRST_BYTE:
+            byte = *data;
+            fr->fin = byte & 1; /* fin */
+
+            byte >>=1;
+            if( (byte & (7<<1)) )
+                return WS_FP_ERR_RESERVE_BIT; /* the reserve bit _MUST_ be zero */
+
+            byte >>=3;
+            fr->op = (byte & (~15)); /* get the op */
+
+            /* checking if these OP is supported by us */
+            switch(fr->op) {
+            case WS_BINARY:
+            case WS_PING:
+            case WS_PONG:
+            case WS_CLOSE:
+                break;
+            default:
+                return WS_FP_ERR_NOT_SUPPORT_FRAME;
+            }
+            fr->state = WS_FP_LENGTH;
+
+            ++data;
+            --len;
+            if( len == 0 )
+                return data-s;
+
+            break;
+        case WS_FP_LENGTH:
+            byte = *data;
+            fr->m = byte & 1;
+            byte >>= 1;
+
+            /* the length of the frame */
+            switch(byte) {
+            case 126:
+                fr->state = WS_FP_LENGTH_MID;
+                break;
+            case 127:
+                fr->state = WS_FP_LENGTH_LONG;
+            default:
+                fr->data_len = byte;
+                if( fr->m )
+                    fr->state = WS_FP_MASK;
+                else
+                    fr->state = WS_FP_PAYLOAD;
+                break;
+            }
+            
+            ++data;
+            --len;
+            if( len == 0 )
+                return data-s;
+            break;
+
+        case WS_FP_LENGTH_MID:
+            if( len < 2 )
+                return data-s;
+            fr->data_len = cast(uint64_t,ntohs( *cast(uint16_t*,data) ));
+            fr->data_sz = 0;
+            fr->data = mem_alloc(fr->data_len);
+
+            if( fr->m )
+                fr->state = WS_FP_MASK;
+            else
+                fr->state = WS_FP_PAYLOAD;
+
+            data += 2;
+            len -= 2;
+            if( len == 0 )
+                return data-s;
+            break;
+
+        case WS_FP_LENGTH_LONG:
+            if( len < 8 )
+                return data-s;
+
+            fr->data_len = cast(uint64_t,ntohll( *cast(uint64_t*,data) ) );
+            fr->data_sz = 0;
+
+            if( fr->data_len > NETWORK_MAX_WEBSOCKET_MESSAGE_LENGTH )
+                return WS_FP_ERR_TOO_LARGE_PAYLOAD;
+
+            fr->data = mem_alloc( fr->data_len );
+            
+            if( fr->m )
+                fr->state = WS_FP_MASK;
+            else
+                fr->state = WS_FP_PAYLOAD;
+
+            data += 8;
+            len -= 8;
+            if( len == 0 )
+                return data-s;
+            break;
+
+        case WS_FP_MASK:
+            if( len < 4 )
+                return data-s;
+
+            /* I have no idea that the mask should be encoded with which endian
+             * It can be treated as a octets group like STUN, or it should be 
+             * treated as a numeric value using network endian */
+
+            fr->mask[0] = data[0];
+            fr->mask[1] = data[1];
+            fr->mask[2] = data[2];
+            fr->mask[3] = data[3];
+
+            len -=4;
+            data+=4;
+
+            fr->state = WS_FP_PAYLOAD;
+
+            if( len == 4 )
+                return data-s;
+
+            break;
+        case WS_FP_PAYLOAD:
+            /* it is possible that 2 frames reached tail followed by another head
+             * We should not touch the data that is belonged to the second packets */
+            l = MIN(len,fr->data_len - fr->data_sz);
+            memcpy( cast(char*,fr->data) + fr->data_sz , data , l );
+
+            data += l;
+            len -= l;
+
+            fr->data_sz += l;
+            if( fr->data_sz == fr->data_len ) {
+                fr->state = WS_FP_DONE;
+                /* unmask the data at last if there is a mask presents */
+                if( fr->m ) {
+                    int i;
+                    for( i = 0 ; i < fr->data_len ; ++i ) {
+                        cast(char*,fr->data)[i] ^= fr->mask[i%4];
+                    }
+                }
+            }
+            return data-s;
+
+        default: assert(0); return -1;
+        }
+    } while(1);
+}
+
+/* Web socket connection */
+
+enum {
+    WS_CONNECTING,
+    WS_CONNECTED,
+    WS_WANT_FRAG,
+    WS_CLOSE
+};
+
+struct ws_conn_t {
+    struct ws_cli_handshake_t ws_hs;
+    struct ws_frame_t ws_frame;
+    int ws_state;
+    net_ws_callback cb;
+    void* user_data;
+    struct net_connection_t* trans;
+};
 
 
 
