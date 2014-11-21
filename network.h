@@ -48,41 +48,39 @@ enum {
     NET_EV_ERR_ACCEPT=1<<18,
     NET_EV_ERR_CONNECT = 1 << 19,
 
-    /* web socket error */
-    NET_EV_WS_FRAME_FAIL = 1 << 21
 };
 
-struct net_buffer_t {
+struct net_buffer {
     void* mem;
     size_t consume_pos;
     size_t produce_pos;
     size_t capacity;
 };
 
-struct net_connection_t;
+struct net_connection;
 
 typedef int (*net_ccb_func)( int , int , struct net_connection_t* );
 
-struct net_connection_t {
-    struct net_connection_t* next; /* private field */
-    struct net_connection_t* prev; /* private field */
+struct net_connection {
+    struct net_connection* next; /* private field */
+    struct net_connection* prev; /* private field */
     void* user_data;
     socket_t socket_fd;
-    struct net_buffer_t in; /* in buffer is the buffer for reading */
-    struct net_buffer_t out;/* out buffer is the buffer for sending */
+    struct net_buffer in; /* in buffer is the buffer for reading */
+    struct net_buffer out;/* out buffer is the buffer for sending */
     net_ccb_func cb;
     int pending_event;     /* private field */
     int timeout;
 };
 
-struct net_server_t;
+struct net_server;
 
-typedef int (*net_acb_func)( int err_code , struct net_server_t* , struct net_connection_t* connection );
+typedef int (*net_acb_func)( int err_code , struct net_server_t* , struct net_connection* connection );
 
-struct net_server_t {
+struct net_server {
     void* user_data;
     socket_t listen_fd;
-    struct net_connection_t conns;
+    struct net_connection conns;
     socket_t ctrl_fd;
     net_acb_func cb;
     int last_io_time;
@@ -101,28 +99,28 @@ int net_server_wakeup( struct net_server_t* );
 socket_t net_block_client_connect( const char* addr );
 
 /* connect to a specific server */
-int net_non_block_client_connect( struct net_server_t* server ,
+int net_non_block_client_connect( struct net_server* server ,
     const char* addr ,
     net_ccb_func cb ,
     void* udata ,
     int timeout );
 
-int net_non_block_connect( struct net_connection_t* conn , const char* addr , int timeout );
+int net_non_block_connect( struct net_connection* conn , const char* addr , int timeout );
 
 /* timer and other socket function */
-struct net_connection_t* net_timer( struct net_server_t* server , net_ccb_func cb , void* udata , int timeout );
-struct net_connection_t* net_fd( struct net_server_t* server , net_ccb_func cb , void* udata , socket_t fd , int pending_event );
+struct net_connection* net_timer( struct net_server* server , net_ccb_func cb , void* udata , int timeout );
+struct net_connection* net_fd( struct net_server* server , net_ccb_func cb , void* udata , socket_t fd , int pending_event );
 
 /* cancle another connection through struct net_connection_t* object , after this pointer is 
  * invalid, so do not store this pointer after calling this function */
-void net_stop( struct net_connection_t* conn );
-void net_post( struct net_connection_t* conn , int ev );
+void net_stop( struct net_connection* conn );
+void net_post( struct net_connection* conn , int ev );
 
 /* buffer function */
 void* net_buffer_consume( struct net_buffer_t* , size_t* );
 void* net_buffer_peek( struct net_buffer_t*  , size_t* );
 void net_buffer_produce( struct net_buffer_t* , const void* data , size_t );
-struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* );
+struct net_buffer* net_buffer_create( size_t cap , struct net_buffer_t* );
 void net_buffer_clean( struct net_buffer_t* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
@@ -139,7 +137,7 @@ void net_buffer_clean( struct net_buffer_t* );
  * handshake has been sent out ; the connected callback receive a NET_EV_CONNECT
  * means the server side handshake package has been received and verified */
 
-struct net_ws_conn_t;
+struct net_ws_conn;
 typedef int (*net_ws_callback)( int ev , int ec , struct net_ws_conn_t* );
 
 /* This is the interface that you could use to attach a websocket layer on 
@@ -150,23 +148,28 @@ typedef int (*net_ws_callback)( int ev , int ec , struct net_ws_conn_t* );
  * otherwise a valid NET_EV event is return and you MUST return it as the
  * return value for struct net_connection_t callback function */
 
-int net_websocket_create_server( struct net_connection_t* conn , 
+int net_ws_create_server( struct net_connection* conn , 
                                  net_ws_callback cb , 
                                  void* data );
 
-int net_websocket_create_client( struct net_connection_t* conn ,
+int net_ws_create_client( struct net_connection* conn ,
                                  net_ws_callback cb ,
                                  void* data , 
                                  const char* path ,
                                  const char* host);
 
-void* net_ws_get_udata( struct net_ws_conn_t* ws );
-void net_ws_set_udata( struct net_ws_conn_t* ws , void* data );
+void* net_ws_get_udata( struct net_ws_conn* ws );
+void net_ws_set_udata( struct net_ws_conn* ws , void* data );
 
 /* If you create a server connection, then these 2 functions will return
  * the corresponding header in HTTP request, otherwise NULL string */
-const char* net_ws_get_path( struct net_ws_conn_t* ws );
-const char* net_ws_get_host( struct net_ws_conn_t* ws );
+const char* net_ws_get_path( struct net_ws_conn* ws );
+const char* net_ws_get_host( struct net_ws_conn* ws );
+
+/* User could use these 2 APIs to set the timeout for a connection
+ * regarding the next network intention */
+void net_ws_set_timeout( struct net_ws_conn* ws , int timeout );
+int net_ws_get_timeout( struct net_ws_conn* ws );
 
 /* this memory needs to be freed after using it. This function must be called inside
  * of the callback function. You better check the event type to see whether it is OK
@@ -175,11 +178,18 @@ const char* net_ws_get_host( struct net_ws_conn_t* ws );
  * function, you may not get the data in the next callback function since the data
  * you haven't consumed will be wiped out and make space for the new pending data */
 
-void* net_ws_recv( struct net_ws_conn_t* ws , size_t* len );
+void* net_ws_recv( struct net_ws_conn* ws , size_t* len );
 
-/* send the data out to the peer side */
-int net_ws_send( struct net_ws_conn_t* ws , void* data, size_t sz);
+/* Send the data through WebSocket to peer side. This function will return the
+ * event that you needs to feed the callback function return */
+int net_ws_send( struct net_ws_conn* ws , void* data, size_t sz);
 
+/* Blocking version API for web socket at client side */
+int net_ws_fd_connect( int fd , const char* path , const char* host );
+int net_ws_fd_send( int fd , void* data , size_t sz );
+int net_ws_fd_recv( int fd , void* buf , size_t buf_sz );
+int net_ws_fd_close( int fd );
+int net_ws_fd_ping( int fd );
 
 #ifdef __cplusplus
 }

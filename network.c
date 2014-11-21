@@ -163,7 +163,7 @@ static int get_time_millisec() {
  *                                  capacity */
 
 
-struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* buf ) {
+struct net_buffer* net_buffer_create( size_t cap , struct net_buffer* buf ) {
     if( cap == 0 )
         buf->mem = NULL;
     else
@@ -173,13 +173,13 @@ struct net_buffer_t* net_buffer_create( size_t cap , struct net_buffer_t* buf ) 
     return buf;
 }
 
-void net_buffer_clean( struct net_buffer_t* buf ) {
+void net_buffer_clean( struct net_buffer* buf ) {
     if(buf->mem)
         mem_free(buf->mem);
     buf->consume_pos = buf->produce_pos = buf->capacity = 0;
 }
 
-void* net_buffer_consume( struct net_buffer_t* buf , size_t* size ) {
+void* net_buffer_consume( struct net_buffer* buf , size_t* size ) {
     int consume_size;
     void* ret;
     if( buf->mem == NULL ) { *size = 0 ; return NULL; }
@@ -198,7 +198,7 @@ void* net_buffer_consume( struct net_buffer_t* buf , size_t* size ) {
     }
 }
 
-void* net_buffer_peek( struct net_buffer_t*  buf , size_t* size ) {
+void* net_buffer_peek( struct net_buffer*  buf , size_t* size ) {
     int consume_size;
     void* ret;
     if( buf->mem == NULL ) { *size = 0 ; return NULL; }
@@ -211,7 +211,7 @@ void* net_buffer_peek( struct net_buffer_t*  buf , size_t* size ) {
     }
 }
 
-void net_buffer_produce( struct net_buffer_t* buf , const void* data , size_t size ) {
+void net_buffer_produce( struct net_buffer* buf , const void* data , size_t size ) {
     if( buf->capacity < size + buf->produce_pos ) {
         /* We need to expand the memory */
         size_t cap = size + buf->produce_pos;
@@ -223,7 +223,7 @@ void net_buffer_produce( struct net_buffer_t* buf , const void* data , size_t si
     buf->produce_pos += size;
 }
 
-static void* net_buffer_consume_peek( struct net_buffer_t* buf ) {
+static void* net_buffer_consume_peek( struct net_buffer* buf ) {
     if( buf->mem == NULL )
         return NULL;
     else {
@@ -234,7 +234,7 @@ static void* net_buffer_consume_peek( struct net_buffer_t* buf ) {
     }
 }
 
-static void net_buffer_consume_advance( struct net_buffer_t* buf , size_t size ) {
+static void net_buffer_consume_advance( struct net_buffer* buf , size_t size ) {
     if( buf->mem == NULL || buf->produce_pos < buf->consume_pos + size )
         return;
     buf->consume_pos += size;
@@ -251,14 +251,14 @@ static void net_buffer_consume_advance( struct net_buffer_t* buf , size_t size )
 
 /* connection */
 
-static void connection_cb( int ev , int ec , struct net_connection_t* conn ) {
+static void connection_cb( int ev , int ec , struct net_connection* conn ) {
     if( conn->cb != NULL ) {
         conn->pending_event = conn->cb(ev,ec,conn);
     }
 }
 
-static struct net_connection_t* connection_create( socket_t fd ) {
-    struct net_connection_t* conn = mem_alloc(sizeof(struct net_connection_t));
+static struct net_connection* connection_create( socket_t fd ) {
+    struct net_connection* conn = mem_alloc(sizeof(struct net_connection));
     conn->socket_fd = fd;
     net_buffer_clear(&(conn->in));
     net_buffer_clear(&(conn->out));
@@ -279,8 +279,8 @@ static struct net_connection_t* connection_create( socket_t fd ) {
         conn->next = &((server)->conns); \
     }while(0)
 
-static struct net_connection_t* connection_destroy( struct net_connection_t* conn ) {
-    struct net_connection_t* ret = conn->prev;
+static struct net_connection* connection_destroy( struct net_connection* conn ) {
+    struct net_connection* ret = conn->prev;
     /* closing the underlying socket and this must be called at once */
     conn->prev->next = conn->next;
     conn->next->prev = conn->prev;
@@ -290,16 +290,16 @@ static struct net_connection_t* connection_destroy( struct net_connection_t* con
     return ret;
 }
 
-static struct net_connection_t* connection_close( struct net_connection_t* conn ) {
+static struct net_connection* connection_close( struct net_connection* conn ) {
     socket_t fd = conn->socket_fd;
-    struct net_connection_t* ret = connection_destroy(conn);
+    struct net_connection* ret = connection_destroy(conn);
     if( fd != invalid_socket_handler )
         closesocket(fd);
     return ret;
 }
 
 /* server */
-int net_server_create( struct net_server_t* server, const char* addr , net_acb_func cb ) {
+int net_server_create( struct net_server* server, const char* addr , net_acb_func cb ) {
     struct sockaddr_in ipv4;
     server->conns.next = &(server->conns);
     server->conns.prev = &(server->conns);
@@ -364,9 +364,9 @@ int net_server_create( struct net_server_t* server, const char* addr , net_acb_f
     return 0;
 }
 
-static void server_close_all_conns( struct net_server_t* server ) {
-    struct net_connection_t* next = server->conns.next;
-    struct net_connection_t* temp = NULL;
+static void server_close_all_conns( struct net_server* server ) {
+    struct net_connection* next = server->conns.next;
+    struct net_connection* temp = NULL;
     while( next != &(server->conns) ) {
         temp = next->next;
         connection_close(temp);
@@ -374,7 +374,7 @@ static void server_close_all_conns( struct net_server_t* server ) {
     }
 }
 
-void net_server_destroy( struct net_server_t* server ) {
+void net_server_destroy( struct net_server* server ) {
     server_close_all_conns(server);
     if( server->ctrl_fd != invalid_socket_handler )
         closesocket(server->ctrl_fd);
@@ -389,7 +389,7 @@ void net_server_destroy( struct net_server_t* server ) {
 #endif /* MULTI_SERVER_ENABLE */
 }
 
-int net_server_wakeup( struct net_server_t* server ) {
+int net_server_wakeup( struct net_server* server ) {
     char buffer[SERVER_CONTROL_DATA_LENGTH];
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
@@ -402,11 +402,11 @@ int net_server_wakeup( struct net_server_t* server ) {
         SERVER_CONTROL_DATA_LENGTH,0,cast(struct sockaddr*,&addr),len) >0 ? 1 : 0;
 }
 
-static void do_accept( struct net_server_t* server );
-static void do_control( struct net_server_t* server );
-static int do_write( struct net_connection_t* conn , int* error_code );
-static int do_read( struct net_server_t* server , int* error_code , struct net_connection_t* conn );
-static int do_connected( struct net_connection_t* conn , int* error_code );
+static void do_accept( struct net_server* server );
+static void do_control( struct net_server* server );
+static int do_write( struct net_connection* conn , int* error_code );
+static int do_read( struct net_server* server , int* error_code , struct net_connection* conn );
+static int do_connected( struct net_connection* conn , int* error_code );
 
 #define ADD_FSET(fs,fd,mfd) \
     do { \
@@ -414,7 +414,7 @@ static int do_connected( struct net_connection_t* conn , int* error_code );
         if( *(mfd) < fd ) { *(mfd) = fd; } \
     }while(0)
 
-static int prepare_linger( struct net_connection_t* conn , fd_set* write , socket_t* max_fd ) {
+static int prepare_linger( struct net_connection* conn , fd_set* write , socket_t* max_fd ) {
     if( net_buffer_readable_size(&(conn->out)) ) {
         FD_SET(conn->socket_fd,write);
         if( *max_fd < conn->socket_fd )
@@ -424,8 +424,8 @@ static int prepare_linger( struct net_connection_t* conn , fd_set* write , socke
     return -1;
 }
 
-static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int* millis , socket_t* max_fd ) {
-    struct net_connection_t* conn;
+static void prepare_fd( struct net_server* server , fd_set* read_set , fd_set* write_set , int* millis , socket_t* max_fd ) {
+    struct net_connection* conn;
     /* adding the whole connection that we already have to the sets */
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_IDLE )
@@ -480,8 +480,8 @@ static void prepare_fd( struct net_server_t* server , fd_set* read_set , fd_set*
     }
 }
 
-static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* write_set , int time_diff ) {
-    struct net_connection_t* conn;
+static int dispatch( struct net_server* server , fd_set* read_set , fd_set* write_set , int time_diff ) {
+    struct net_connection* conn;
     int ev , rw , ret ,ec;
     /* 1. checking if we have control operation or not */
     if( FD_ISSET(server->ctrl_fd,read_set) ) {
@@ -576,8 +576,8 @@ static int dispatch( struct net_server_t* server , fd_set* read_set , fd_set* wr
     return 0;
 }
 
-static void reclaim_socket( struct net_server_t* server ) {
-    struct net_connection_t* conn;
+static void reclaim_socket( struct net_server* server ) {
+    struct net_connection* conn;
     /* reclaim all the socket that has marked it as CLOSE operation */
     for( conn = server->conns.next ; conn != &(server->conns) ; conn = conn->next ) {
         if( conn->pending_event & NET_EV_CLOSE ) {
@@ -588,7 +588,7 @@ static void reclaim_socket( struct net_server_t* server ) {
     }
 }
 
-int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
+int net_server_poll( struct net_server* server , int millis , int* wakeup ) {
     fd_set read_set , write_set;
     socket_t max_fd = invalid_socket_handler;
     int active_num , return_num;
@@ -654,8 +654,8 @@ int net_server_poll( struct net_server_t* server , int millis , int* wakeup ) {
 
 #undef ADD_FSET
 
-static void do_accept( struct net_server_t* server ) {
-    struct net_connection_t* conn;
+static void do_accept( struct net_server* server ) {
+    struct net_connection* conn;
     int error_code;
     do {
         socket_t sock = accept(server->listen_fd,NULL,NULL);
@@ -680,7 +680,7 @@ static void do_accept( struct net_server_t* server ) {
     } while(1);
 }
 
-static int do_read( struct net_server_t* server , int* error_code , struct net_connection_t* conn ) {
+static int do_read( struct net_server* server , int* error_code , struct net_connection* conn ) {
     int rd = recv( conn->socket_fd , server->reserve_buffer , MAXIMUM_IPV4_PACKET_SIZE , 0 );
     if( rd <= 0 ) {
         *error_code = net_has_error();
@@ -691,7 +691,7 @@ static int do_read( struct net_server_t* server , int* error_code , struct net_c
     }
 }
 
-static int do_write( struct net_connection_t* conn , int* error_code ) {
+static int do_write( struct net_connection* conn , int* error_code ) {
     void* out = net_buffer_consume_peek(&(conn->out));
     int snd;
     if( out == NULL ) return 0;
@@ -705,12 +705,12 @@ static int do_write( struct net_connection_t* conn , int* error_code ) {
     }
 }
 
-static void do_control( struct net_server_t* server ) {
+static void do_control( struct net_server* server ) {
     char buffer[SERVER_CONTROL_DATA_LENGTH];
     recvfrom(server->ctrl_fd,buffer,SERVER_CONTROL_DATA_LENGTH,0,NULL,NULL);
 }
 
-static int do_connected( struct net_connection_t* conn , int* error_code ) {
+static int do_connected( struct net_connection* conn , int* error_code ) {
     int val;
     socklen_t len = sizeof(int);
     /* before we do anything we need to check whether we have connected to the socket or not */
@@ -744,12 +744,12 @@ socket_t net_block_client_connect( const char* addr ) {
     }
 }
 
-int net_non_block_client_connect(struct net_server_t* server ,
+int net_non_block_client_connect(struct net_server* server ,
     const char* addr ,
     net_ccb_func cb ,
     void* udata ,
     int timeout ) {
-        struct net_connection_t* conn = connection_create(invalid_socket_handler);
+        struct net_connection* conn = connection_create(invalid_socket_handler);
         connection_add(server,conn);
         conn->cb = cb;
         conn->user_data = udata;
@@ -763,7 +763,7 @@ int net_non_block_client_connect(struct net_server_t* server ,
         return 0;
 }
 
-int net_non_block_connect( struct net_connection_t* conn , const char* addr , int timeout ) {
+int net_non_block_connect( struct net_connection* conn , const char* addr , int timeout ) {
     int ret;
     struct sockaddr_in ipv4;
     socket_t fd;
@@ -794,8 +794,8 @@ int net_non_block_connect( struct net_connection_t* conn , const char* addr , in
 }
 
 /* timer and socket */
-struct net_connection_t* net_timer( struct net_server_t* server , net_ccb_func cb , void* udata , int timeout ) {
-    struct net_connection_t* conn = connection_create(invalid_socket_handler);
+struct net_connection* net_timer( struct net_server* server , net_ccb_func cb , void* udata , int timeout ) {
+    struct net_connection* conn = connection_create(invalid_socket_handler);
     connection_add(server,conn);
     conn->cb = cb;
     conn->user_data = udata;
@@ -804,8 +804,8 @@ struct net_connection_t* net_timer( struct net_server_t* server , net_ccb_func c
     return conn;
 }
 
-struct net_connection_t* net_fd( struct net_server_t* server, net_ccb_func cb , void* data ,  socket_t fd , int pending_event ) {
-    struct net_connection_t* conn = connection_create(fd);
+struct net_connection* net_fd( struct net_server* server, net_ccb_func cb , void* data ,  socket_t fd , int pending_event ) {
+    struct net_connection* conn = connection_create(fd);
     nb_socket(fd);
     exec_socket(fd);
     conn->cb = cb;
@@ -814,11 +814,11 @@ struct net_connection_t* net_fd( struct net_server_t* server, net_ccb_func cb , 
     return conn;
 }
 
-void net_stop( struct net_connection_t* conn ) {
+void net_stop( struct net_connection* conn ) {
     conn->pending_event = NET_EV_CLOSE;
 }
 
-void net_post( struct net_connection_t* conn , int ev ) {
+void net_post( struct net_connection* conn , int ev ) {
     conn->pending_event = ev;
 }
 
@@ -876,6 +876,7 @@ size_t b64_encode( const char *src, size_t src_len, char *dst ) {
     return j;
 }
 
+static
 int b64_decode( const char *src, size_t src_len, char *dst , size_t dst_len ) {
     static char B64LOOKUP[] = {
         255,255,255,255,255,255,255,255,255,255,255,
@@ -995,6 +996,7 @@ static uint32_t blk0(CHAR64LONG16 *block, int i) {
 #define R4(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0xCA62C1D6+rol(v,5);w=rol(w,30);
 
 /* Hash a single 512-bit block. This is the core of the algorithm. */
+static
 void SHA1_Transform(uint32_t state[5], const uint8_t buffer[64])
 {
     uint32_t a, b, c, d, e;
@@ -1042,8 +1044,8 @@ void SHA1_Transform(uint32_t state[5], const uint8_t buffer[64])
     a = b = c = d = e = 0;
 }
 
-
 /* SHA1Init - Initialize new context */
+static
 void SHA1_Init(SHA1_CTX* context)
 {
     /* SHA1 initialization constants */
@@ -1055,8 +1057,8 @@ void SHA1_Init(SHA1_CTX* context)
     context->count[0] = context->count[1] = 0;
 }
 
-
 /* Run your data through this. */
+static
 void SHA1_Update(SHA1_CTX* context, const uint8_t* data, const size_t len)
 {
     size_t i, j;
@@ -1078,6 +1080,7 @@ void SHA1_Update(SHA1_CTX* context, const uint8_t* data, const size_t len)
 }
 
 /* Add padding and return the message digest. */
+static
 void SHA1_Final(SHA1_CTX* context, uint8_t digest[SHA1_DIGEST_SIZE])
 {
     uint32_t i;
@@ -1109,11 +1112,11 @@ void SHA1_Final(SHA1_CTX* context, uint8_t digest[SHA1_DIGEST_SIZE])
 #define WS_MAX_HOST_NAME 256
 #define WS_MAX_DIR_NAME 256
 #define WS_MAX_HTTP_ATTRIBUTE_LINE_NUMBER 31
-#define WS_FAIL_TIMEOUT_CLOSE 5000
+#define WS_FAIL_TIMEOUT_CLOSE 1000
 static const char* WS_KEY_COOKIE="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /* This object is _SENT_ from client but it needs to parsed out by server */
-struct ws_cli_handshake_t {
+struct ws_cli_handshake {
     char ws_key[16];
     char host[WS_MAX_HOST_NAME];
     char dir [WS_MAX_DIR_NAME];
@@ -1241,7 +1244,7 @@ static int http_strcmp( const char* lhs , const char* rhs ) {
  */
 
 static 
-int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handshake_t* hs ) {
+int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handshake* hs ) {
     const char* s = data;
     int eof;
     int ret;
@@ -1356,7 +1359,7 @@ fail: /* done */
 
 /* Generate WebSocket reply for successful upgrade */
 static
-size_t ws_handshake_ser_reply( struct ws_cli_handshake_t* hs , char ret[1024] ) {
+size_t ws_handshake_ser_reply( struct ws_cli_handshake* hs , char ret[1024] ) {
     static const char WS_FORMAT[] = \
         "HTTP/1.1 101 Switching Protocols\r\n" \
         "Upgrade:websocket\r\n" \
@@ -1403,7 +1406,7 @@ void ws_handshake_generate_key( char b64_buf[25] , char key[16] ) {
 }
 
 static
-size_t ws_handshake_cli_request( char rand_key[24] ,  const char* path , const char* host , char ret[1024] ) {
+size_t ws_handshake_cli_request( char rand_key[16] ,  const char* path , const char* host , char ret[1024] ) {
     static const char WS_FORMAT[]= \
         "GET %s HTTP/1.1\r\n" \
         "Upgrade:websocket\r\n" \
@@ -1428,7 +1431,7 @@ size_t ws_handshake_cli_request( char rand_key[24] ,  const char* path , const c
 /* Server side handshake object */
 #define WS_SEC_KEY_LENGTH 28
 
-struct ws_ser_handshake_t {
+struct ws_ser_handshake {
     char key[WS_SEC_KEY_LENGTH]; /* A 20 bytes SHA1 encoded as base64 has 28 bytes */
     unsigned char upgrade : 1;
     unsigned char connection : 1;
@@ -1459,7 +1462,7 @@ static int ws_ser_handshake_check_first_line( const char* data ) {
 }
 
 static
-int ws_ser_handshake_parse( const char* data , size_t len , struct ws_ser_handshake_t* hs ) {
+int ws_ser_handshake_parse( const char* data , size_t len , struct ws_ser_handshake* hs ) {
     int eof;
     int ret;
     int num;
@@ -1570,7 +1573,7 @@ enum {
     WS_FP_ERR_TOO_LARGE_PAYLOAD = -3
 };
 
-struct ws_frame_t {
+struct ws_frame {
     unsigned char op :4;
     unsigned char fin:1;
     unsigned char m:3;
@@ -1604,7 +1607,7 @@ struct ws_frame_t {
 /* this ws frame parser is a stream parser, feed it as small as 1 byte
  * will also produce valid result and not hurt any other one */
 static 
-int ws_frame_parse( const char* data , size_t len , struct ws_frame_t* fr ) {
+int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
     const char* s = data;
     char byte;
     size_t l;
@@ -1618,11 +1621,11 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame_t* fr ) {
             fr->fin = byte & 1; /* fin */
 
             byte >>=1;
-            if( (byte & (7<<1)) )
+            if( byte & 7 )
                 return WS_FP_ERR_RESERVE_BIT; /* the reserve bit _MUST_ be zero */
 
             byte >>=3;
-            fr->op = (byte & (~15)); /* get the op */
+            fr->op = byte; /* get the op */
 
             /* checking if these OP is supported by us */
             switch(fr->op) {
@@ -1860,13 +1863,14 @@ enum {
     WS_HANDSHAKE_RECV,
     WS_HANDSHAKE_SEND,
     WS_CONNECTED,
-    WS_WANT_FRAG
+    WS_WANT_FRAG,
+    WS_CLOSED /* this socket has been SHUTDOWN */
 };
 
 /* Web socket server connection */
-struct net_ws_ser_conn_t {
-    struct ws_cli_handshake_t ws_hs;
-    struct ws_frame_t ws_frame;
+struct net_ws_ser_conn {
+    struct ws_cli_handshake ws_hs;
+    struct ws_frame ws_frame;
 
     void* pending_data;
     size_t pending_data_sz;
@@ -1877,15 +1881,15 @@ struct net_ws_ser_conn_t {
 
     net_ws_callback cb;
     void* user_data;
-    struct net_connection_t* trans;
+    struct net_connection* trans;
 };
 
 /* Web socket client connection */
-struct net_ws_cli_conn_t {
-    struct ws_ser_handshake_t ws_hs;
-    struct ws_frame_t ws_frame;
+struct net_ws_cli_conn {
+    struct ws_ser_handshake ws_hs;
+    struct ws_frame ws_frame;
 
-    char rand_key[24];
+    char rand_key[16];
 
     void* pending_data;
     size_t pending_data_sz;
@@ -1896,7 +1900,7 @@ struct net_ws_cli_conn_t {
 
     net_ws_callback cb;
     void* user_data;
-    struct net_connection_t* trans;
+    struct net_connection* trans;
 };
 
 enum {
@@ -1904,23 +1908,27 @@ enum {
     WS_CLIENT
 };
 
-struct net_ws_conn_t {
-    unsigned int type ;
+struct net_ws_conn {
+    unsigned int type :31;
+    unsigned int detached : 1; /* When this flag is on, the user is entirely treate the underlying
+                                * websocket has been closed. This is needed since we _NEED_ to send
+                                * the close frame and put the websocket into valid status */
+    int timeout;
     union {
-        struct net_ws_ser_conn_t* server;
-        struct net_ws_cli_conn_t* client;
+        struct net_ws_ser_conn* server;
+        struct net_ws_cli_conn* client;
     } ptr;
 };
 
 static
-void net_websocket_destroy( struct net_ws_conn_t* conn ) {
+void net_ws_destroy( struct net_ws_conn* conn ) {
     if( conn->type == WS_SERVER ) {
-        struct net_ws_ser_conn_t* ser = conn->ptr.server;
+        struct net_ws_ser_conn* ser = conn->ptr.server;
         DESTROY_WS_FRAME( &(ser->ws_frame) );
         if( ser->pending_data != NULL )
             free(ser->pending_data);
     } else {
-        struct net_ws_cli_conn_t* cli = conn->ptr.client;
+        struct net_ws_cli_conn* cli = conn->ptr.client;
         DESTROY_WS_FRAME( &(cli->ws_frame) );
         if( cli->pending_data != NULL )
             free(cli->pending_data);
@@ -1929,26 +1937,55 @@ void net_websocket_destroy( struct net_ws_conn_t* conn ) {
 }
 
 static
-int ws_ser_conn_callback( int ev , int ec , struct net_connection_t* conn );
+int ws_ser_conn_callback( int ev , int ec , struct net_connection* conn );
 static
-int ws_cli_conn_callback( int ev , int ec , struct net_connection_t* conn );
+int ws_cli_conn_callback( int ev , int ec , struct net_connection* conn );
 
 static
-int ws_conn_pending_event( int ev , struct net_ws_conn_t* conn ) {
+int ws_conn_pending_event( int ev , struct net_ws_conn* ws_conn , struct net_connection* conn ) {
 
-    if( ev & NET_EV_CLOSE || ev & NET_EV_LINGER_SILENT ) {
-        free(conn);
+    /* Here we need to handle the CLOSE intention initialized by the
+     * user side. The user could initialize close intention by :
+     * NET_EV_CLOSE , NET_EV_LINGER and NET_EV_LINGER_SILENT .
+     * For NET_EV_CLOSE, we just need to issue a CLOSE package and
+     * then linger it silently; however for NET_EV_LINGER and 
+     * NET_EV_LINGER_SILENT, we need to insert one more frame as 
+     * close frame on the network */
+    
+    if( ev & NET_EV_CLOSE ) {
+        char* close_seg;
+        size_t close_seg_sz = 0;
+        close_seg = ws_make_frame( NULL , &close_seg_sz , 0 , WS_CLOSE , 0 );
+        net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
+        free(close_seg);
+        free(ws_conn);
+
+        ev &= ~NET_EV_CLOSE;
+        ev |= NET_EV_LINGER_SILENT;
+        conn->timeout = ws_conn->timeout;
         return ev;
-    }  else {
+    } else if( ev & NET_EV_LINGER || ev & NET_EV_LINGER_SILENT ) {
+        char* close_seg;
+        size_t close_seg_sz = 0;
+        close_seg = ws_make_frame( NULL , &close_seg_sz , 0 , WS_CLOSE , 0 );
+        net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
+        free(close_seg);
+        free(ws_conn);
+
+        conn->timeout = ws_conn->timeout;
+        return ev;
+    } else {
+        /* For all the other operations , just forward the timeout and event */
+        conn->timeout = ws_conn->timeout;
         return ev;
     }
 }
 
 static
-int ws_ser_handle_handshake( struct net_ws_conn_t* ws_conn , struct net_connection_t* conn ) {
+int ws_ser_handle_handshake( struct net_ws_conn* ws_conn , struct net_connection* conn ) {
     void* data;
     size_t len = net_buffer_readable_size(&(conn->in));
-    struct net_ws_ser_conn_t* c = ws_conn->ptr.server;
+    struct net_ws_ser_conn* c = ws_conn->ptr.server;
     int ret = ws_cli_handshake_parse(cast(const char*,data),len,&(c->ws_hs));
     data = net_buffer_peek(&(conn->in),&len);
 
@@ -1958,7 +1995,7 @@ int ws_ser_handle_handshake( struct net_ws_conn_t* ws_conn , struct net_connecti
         /* avoid the return value */
         c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
         /* destroy the web socket connection */
-        net_websocket_destroy(ws_conn);
+        net_ws_destroy(ws_conn);
         /* fail the connection */
         conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
         return NET_EV_LINGER_SILENT | NET_EV_TIMEOUT;
@@ -1982,20 +2019,20 @@ int ws_ser_handle_handshake( struct net_ws_conn_t* ws_conn , struct net_connecti
 }
 
 static
-int ws_finish_handshake( struct net_ws_conn_t* ws_conn , struct net_connection_t* conn ) {
+int ws_finish_handshake( struct net_ws_conn* ws_conn , struct net_connection* conn ) {
     if( ws_conn->type == WS_SERVER ) {
         ws_conn->ptr.server->ws_state = WS_CONNECTED;
         return ws_conn_pending_event(
-            ws_conn->ptr.server->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn);
+            ws_conn->ptr.server->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn,conn);
     } else {
         ws_conn->ptr.client->ws_state = WS_CONNECTED;
         return ws_conn_pending_event(
-            ws_conn->ptr.client->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn);
+            ws_conn->ptr.client->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn,conn);
     }
 }
 
 static
-int ws_do_frag( struct ws_frame_t* fr , int* state ) {
+int ws_do_frag( struct ws_frame* fr , int* state ) {
     if( *state == WS_CONNECTED ) {
         /* we are not in fragmentation states, so we can ACCEPT a fragmentation */
         if( !fr->fin ) {
@@ -2020,7 +2057,7 @@ int ws_do_frag( struct ws_frame_t* fr , int* state ) {
 }
 
 static
-int ws_do_pingpong( struct ws_frame_t* fr , struct net_connection_t* conn , int* send_ping , int* pev ) {
+int ws_do_pingpong( struct ws_frame* fr , struct net_connection* conn , int* send_ping , int* pev ) {
     char* pong_msg;
     size_t pong_msg_sz = 0;
     /* Handle the ping-pong message here */
@@ -2051,8 +2088,29 @@ int ws_do_pingpong( struct ws_frame_t* fr , struct net_connection_t* conn , int*
 }
 
 static
-int ws_ser_do_read( struct net_ws_conn_t* ws_conn , struct net_connection_t* conn , int ev ) {
-    struct net_ws_ser_conn_t* s = ws_conn->ptr.server;
+int ws_do_close( struct net_connection* conn , int server ) {
+    /* When we receive a CLOSE message, we need to send a CLOSE message 
+     * back and silently CLOSE the TCP connection. This job doesn't need
+     * users involvement */
+    char* close_seg;
+    size_t close_seg_sz=0;
+    close_seg = ws_make_frame(NULL,&close_seg_sz,0,WS_CLOSE,0);
+    net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
+    free(close_seg);
+    /* For a server, we always expecting the client side close the
+     * connection to avoid TIME_WAIT, and in RFC it has been notified
+     * that the client _SHOULD_ close the connection at first */
+    if( server ) {
+        conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
+        return NET_EV_LINGER_SILENT | NET_EV_TIMEOUT;
+    } else {
+        return NET_EV_LINGER_SILENT;
+    }
+}
+
+static
+int ws_ser_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , int ev ) {
+    struct net_ws_ser_conn* s = ws_conn->ptr.server;
     size_t len = net_buffer_readable_size(&(conn->in));
     void* data = net_buffer_peek(&(conn->in),&len);
     int ret = ws_frame_parse(cast(const char*,data),len,&(s->ws_frame));
@@ -2074,6 +2132,16 @@ int ws_ser_do_read( struct net_ws_conn_t* ws_conn , struct net_connection_t* con
             case WS_BINARY:
             case WS_TEXT:
                 break;
+
+            case WS_CLOSE:
+                /* Handling the close event INITIALIZED by the peer side */
+                ret_ev = ws_do_close(conn,1);
+                /* call user's callback function and tell him that you are finished */
+                s->cb( NET_EV_EOF , 0 , ws_conn );
+                /* destroy ws_conn */
+                net_ws_destroy(ws_conn);
+                return ret_ev;
+
             default:
                 goto fail;
             }
@@ -2099,34 +2167,34 @@ int ws_ser_do_read( struct net_ws_conn_t* ws_conn , struct net_connection_t* con
 
             /* call user's callback function */
             ret_ev |= ws_conn_pending_event(
-                s->cb( NET_EV_READ | ev , 0 , ws_conn ),ws_conn);
+                s->cb( NET_EV_READ | ev , 0 , ws_conn ),ws_conn,conn);
         }
         len = cast(size_t,ret);
         net_buffer_consume(&(conn->in),&len);
         return ret_ev;
     }
 fail:
-    s->cb( NET_EV_WS_FRAME_FAIL | ev , -1 , ws_conn );
-    net_websocket_destroy(ws_conn);
+    s->cb( NET_EV_ERR_READ | ev , -1 , ws_conn );
+    net_ws_destroy(ws_conn);
     conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
     return NET_EV_CLOSE | NET_EV_TIMEOUT;
 }
 
 static
-int ws_ser_conn_callback( int ev , int ec , struct net_connection_t* conn ) {
-    struct net_ws_conn_t* ws_conn = cast( struct net_ws_conn_t* , conn->user_data );
-    struct net_ws_ser_conn_t* c = ws_conn->ptr.server;
+int ws_ser_conn_callback( int ev , int ec , struct net_connection* conn ) {
+    struct net_ws_conn* ws_conn = cast( struct net_ws_conn* , conn->user_data );
+    struct net_ws_ser_conn* c = ws_conn->ptr.server;
 
     assert(ws_conn->type == WS_SERVER);
     if( ec != 0 ) {
         c->cb(ev,ec,ws_conn);
-        net_websocket_destroy(ws_conn);
+        net_ws_destroy(ws_conn);
         return NET_EV_CLOSE;
     } else {
         int rw_ev = 0;
 
         if( ev & NET_EV_EOF ) {
-            return ws_conn_pending_event(c->cb( ev , ec , ws_conn ),ws_conn);
+            return ws_conn_pending_event(c->cb( ev , ec , ws_conn ),ws_conn,conn);
         }
         /* write */
         if( ev & NET_EV_WRITE ) {
@@ -2144,7 +2212,7 @@ int ws_ser_conn_callback( int ev , int ec , struct net_connection_t* conn ) {
             default:
                 /* failed event in such status */
                 c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                net_websocket_destroy(ws_conn);
+                net_ws_destroy(ws_conn);
                 conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
                 return NET_EV_CLOSE | NET_EV_TIMEOUT;
             }
@@ -2164,23 +2232,41 @@ int ws_ser_conn_callback( int ev , int ec , struct net_connection_t* conn ) {
                 default:
                     /* failed event in such status */
                     c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                    net_websocket_destroy(ws_conn);
+                    net_ws_destroy(ws_conn);
                     conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
                     return NET_EV_CLOSE | NET_EV_TIMEOUT;
                 }
         } else {
-            /* handle NET_EV_LINGER function */
             return ws_conn_pending_event(
-                c->cb( NET_EV_WRITE , 0 , ws_conn ) , ws_conn );
+                c->cb( ev , 0 , ws_conn ) , ws_conn ,conn );
         }
     }
+}
+
+static int ws_cli_validate_handshake( const struct ws_ser_handshake* hs , char rand_key[16] ) {
+    char sha1[SHA1_DIGEST_SIZE];
+    int len;
+    char buf[128];
+    SHA1_CTX shal_ctx;
+    uint8_t digest[SHA1_DIGEST_SIZE];
+
+    len = b64_decode( hs->key , WS_SEC_KEY_LENGTH , sha1, SHA1_DIGEST_SIZE );
+    assert( len == SHA1_DIGEST_SIZE );
+
+    len = sprintf(buf,"%s%s",rand_key,WS_KEY_COOKIE);
+    assert( len >0 && len < 128 );
+    /* shal1 these key */
+    SHA1_Init(&shal_ctx);
+    SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),len);
+    SHA1_Final(&shal_ctx,digest);
+    return memcmp(sha1,digest,SHA1_DIGEST_SIZE);
 }
 
 /* For a client, its initial handshake is sent once after user create it , so in the callback
  * function we only need to handle the handshake package sent from the server side */
 static
-int ws_cli_conn_finish_handshake( struct net_ws_conn_t* ws_conn , struct net_connection_t* conn ) {
-    struct net_ws_cli_conn_t* c = ws_conn->ptr.client;
+int ws_cli_conn_finish_handshake( struct net_ws_conn* ws_conn , struct net_connection* conn ) {
+    struct net_ws_cli_conn* c = ws_conn->ptr.client;
     void* data;
     size_t sz;
     int ret;
@@ -2194,32 +2280,14 @@ int ws_cli_conn_finish_handshake( struct net_ws_conn_t* ws_conn , struct net_con
     if( ret < 0 ) {
         /* failed , just close the connection */
         c->cb( NET_EV_CONNECT , -1 , ws_conn );
-        net_websocket_destroy(ws_conn);
+        net_ws_destroy(ws_conn);
         conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
         return NET_EV_CLOSE | NET_EV_TIMEOUT;
     } else if( ret == 0 ) {
         /* verify the handshake key now */
-
-        char sha1[SHA1_DIGEST_SIZE];
-        int len;
-        char buf[128];
-        SHA1_CTX shal_ctx;
-        uint8_t digest[SHA1_DIGEST_SIZE];
-
-        len = b64_decode( c->ws_hs.key , WS_SEC_KEY_LENGTH , sha1, 20 );
-        assert( len == 20 );
-
-        len = sprintf(buf,"%s%s",c->rand_key,WS_KEY_COOKIE);
-        assert( len >0 && len < 128 );
-
-        /* shal1 these key */
-        SHA1_Init(&shal_ctx);
-        SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),len);
-        SHA1_Final(&shal_ctx,digest);
-
-        if( memcmp(digest,sha1,20) != 0 ) {
+        if( ws_cli_validate_handshake(&(c->ws_hs),c->rand_key) !=0 ) {
             c->cb( NET_EV_CONNECT , -1 , ws_conn );
-            net_websocket_destroy(ws_conn);
+            net_ws_destroy(ws_conn);
             conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
             return NET_EV_CLOSE | NET_EV_TIMEOUT;
         }
@@ -2230,7 +2298,7 @@ int ws_cli_conn_finish_handshake( struct net_ws_conn_t* ws_conn , struct net_con
         c->ws_state = WS_CONNECTED;
         /* verified */
         return ws_conn_pending_event(
-            c->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn);
+            c->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn,conn);
     } else {
         sz = cast(size_t,ret);
         net_buffer_consume(&(conn->in),&sz);
@@ -2243,10 +2311,10 @@ int ws_cli_conn_finish_handshake( struct net_ws_conn_t* ws_conn , struct net_con
 static
 int ws_cli_send_handshake( const char* path , 
                            const char* host , 
-                           struct net_ws_conn_t* ws_conn , 
-                           struct net_connection_t* conn ) {
+                           struct net_ws_conn* ws_conn , 
+                           struct net_connection* conn ) {
     char request[1024];
-    struct net_ws_cli_conn_t* c = ws_conn->ptr.client;
+    struct net_ws_cli_conn* c = ws_conn->ptr.client;
     size_t sz;
     if( strlen(path) >= WS_MAX_DIR_NAME || strlen(host) >= WS_MAX_HOST_NAME )
         return NET_EV_NULL;
@@ -2258,8 +2326,8 @@ int ws_cli_send_handshake( const char* path ,
 }
 
 static
-int ws_cli_do_read( struct net_ws_conn_t* ws_conn , struct net_connection_t* conn , int ev ) {
-    struct net_ws_cli_conn_t* c = ws_conn->ptr.client;
+int ws_cli_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , int ev ) {
+    struct net_ws_cli_conn* c = ws_conn->ptr.client;
     size_t len = net_buffer_readable_size(&(conn->in));
     void* data = net_buffer_peek(&(conn->in),&len);
     int ret = ws_frame_parse(cast(const char*,data),len,&(c->ws_frame));
@@ -2282,6 +2350,11 @@ int ws_cli_do_read( struct net_ws_conn_t* ws_conn , struct net_connection_t* con
             case WS_BINARY:
             case WS_TEXT:
                 break;
+            case WS_CLOSE:
+                ret_ev = ws_do_close(conn,0);
+                c->cb( NET_EV_EOF , 0 , ws_conn );
+                net_ws_destroy(ws_conn);
+                return ret_ev;
             default:
                 goto fail;
             }
@@ -2305,33 +2378,33 @@ int ws_cli_do_read( struct net_ws_conn_t* ws_conn , struct net_connection_t* con
 
             /* call user's callback function */
             ret_ev |= ws_conn_pending_event(
-                c->cb( NET_EV_READ | ev , 0 , ws_conn ),ws_conn);
+                c->cb( NET_EV_READ | ev , 0 , ws_conn ),ws_conn,conn);
         }
         len = cast(size_t,ret);
         net_buffer_consume(&(conn->in),&len);
         return ret_ev;
     }
 fail:
-    c->cb( NET_EV_WS_FRAME_FAIL | ev , -1 , ws_conn );
-    net_websocket_destroy(ws_conn);
+    c->cb( NET_EV_ERR_READ | ev , -1 , ws_conn );
+    net_ws_destroy(ws_conn);
     conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
     return NET_EV_CLOSE | NET_EV_TIMEOUT;
 }
 
 static
-int ws_cli_conn_callback( int ev , int ec , struct net_connection_t* conn ) {
-    struct net_ws_conn_t* ws_conn = cast(struct net_ws_conn_t*,conn->user_data);
-    struct net_ws_cli_conn_t* c = ws_conn->ptr.client;
+int ws_cli_conn_callback( int ev , int ec , struct net_connection* conn ) {
+    struct net_ws_conn* ws_conn = cast(struct net_ws_conn*,conn->user_data);
+    struct net_ws_cli_conn* c = ws_conn->ptr.client;
 
     if( ec != 0 ) {
         /* Network error */
         c->cb( ev , ec , ws_conn );
-        net_websocket_destroy(ws_conn);
+        net_ws_destroy(ws_conn);
         return NET_EV_CLOSE;
     } else {
         int rw_ev = 0; /* read write event */
         if( ev & NET_EV_EOF ) {
-            return ws_conn_pending_event(c->cb(ev,ec,ws_conn),ws_conn);
+            return ws_conn_pending_event(c->cb(ev,ec,ws_conn),ws_conn ,conn);
         }
 
         if( ev & NET_EV_WRITE ) {
@@ -2346,7 +2419,7 @@ int ws_cli_conn_callback( int ev , int ec , struct net_connection_t* conn ) {
             default:
                 /* failed event in such status */
                 c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                net_websocket_destroy(ws_conn);
+                net_ws_destroy(ws_conn);
                 conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
                 return NET_EV_CLOSE | NET_EV_TIMEOUT;
             }
@@ -2362,32 +2435,32 @@ int ws_cli_conn_callback( int ev , int ec , struct net_connection_t* conn ) {
                 assert( c->ws_state != WS_HANDSHAKE_SEND );
                 /* failed event in such status */
                 c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                net_websocket_destroy(ws_conn);
+                net_ws_destroy(ws_conn);
                 conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
                 return NET_EV_CLOSE | NET_EV_TIMEOUT;
             }
         } else {
             return ws_conn_pending_event(
-                c->cb( NET_EV_WRITE , 0 , ws_conn ) , ws_conn );
+                c->cb( ev , 0 , ws_conn ) , ws_conn ,conn);
         }
     }
 }
 
-void* net_ws_get_udata( struct net_ws_conn_t* ws ) {
+void* net_ws_get_udata( struct net_ws_conn* ws ) {
     if( ws->type == WS_SERVER )
         return ws->ptr.server->user_data;
     else
         return ws->ptr.client->user_data;
 }
 
-void net_ws_set_udata( struct net_ws_conn_t* ws , void* data ) {
+void net_ws_set_udata( struct net_ws_conn* ws , void* data ) {
     if( ws->type == WS_SERVER )
         ws->ptr.server->user_data = data;
     else
         ws->ptr.client->user_data = data;
 }
 
-void* net_ws_recv( struct net_ws_conn_t* ws , size_t* len ) {
+void* net_ws_recv( struct net_ws_conn* ws , size_t* len ) {
     void* ret;
     if( ws->type == WS_SERVER ) {
         if( ws->ptr.server->pending_data == NULL )
@@ -2410,14 +2483,16 @@ void* net_ws_recv( struct net_ws_conn_t* ws , size_t* len ) {
     return ret;
 }
 
-int net_ws_send( struct net_ws_conn_t* ws , void* data, size_t sz ) {
+int net_ws_send( struct net_ws_conn* ws , void* data, size_t sz ) {
     void* framed_data;
     size_t framed_sz = sz;
-    struct net_buffer_t* out;
+    struct net_buffer* out;
     if( ws->type == WS_SERVER ) {
+        assert( ws->ptr.server->ws_state != WS_CLOSED );
         framed_data = ws_make_frame( data , &framed_sz , 0 , WS_BINARY , 0 );
         out = &(ws->ptr.server->trans->out);
     } else {
+        assert( ws->ptr.client->ws_state != WS_CLOSED );
         framed_data = ws_make_frame( data , &framed_sz , 1 , WS_BINARY , 0 );
         out = &(ws->ptr.client->trans->out);
     }
@@ -2426,7 +2501,7 @@ int net_ws_send( struct net_ws_conn_t* ws , void* data, size_t sz ) {
     return NET_EV_WRITE;
 }
 
-const char* net_ws_get_path( struct net_ws_conn_t* ws ) {
+const char* net_ws_get_path( struct net_ws_conn* ws ) {
     if( ws->type == WS_SERVER ) {
         return ws->ptr.server->ws_hs.host;
     } else {
@@ -2434,7 +2509,7 @@ const char* net_ws_get_path( struct net_ws_conn_t* ws ) {
     }
 }
 
-const char* net_ws_get_host( struct net_ws_conn_t* ws ) {
+const char* net_ws_get_host( struct net_ws_conn* ws ) {
     if( ws->type == WS_SERVER ) {
         return ws->ptr.server->ws_hs.dir;
     } else {
@@ -2442,12 +2517,21 @@ const char* net_ws_get_host( struct net_ws_conn_t* ws ) {
     }
 }
 
-int net_websocket_create_server( struct net_connection_t* conn , 
+void net_ws_set_timeout( struct net_ws_conn* ws , int timeout ) {
+    ws->timeout = timeout;
+}
+
+int net_ws_get_timeout( struct net_ws_conn* ws ) {
+    return ws->timeout;
+}
+
+int net_ws_create_server( struct net_connection* conn , 
                                  net_ws_callback cb , 
                                  void* data ) {
-    struct net_ws_conn_t* c = mem_alloc(sizeof(struct net_ws_conn_t)+sizeof(struct net_ws_ser_conn_t));
+    struct net_ws_conn* c = mem_alloc(sizeof(struct net_ws_conn)+sizeof(struct net_ws_ser_conn));
     c->type = WS_SERVER;
-    c->ptr.server = cast(struct net_ws_ser_conn_t*,(cast(char*,c)+sizeof(struct net_ws_conn_t)));
+    c->timeout = 0;
+    c->ptr.server = cast(struct net_ws_ser_conn*,(cast(char*,c)+sizeof(struct net_ws_conn)));
     c->ptr.server->cb = cb;
     c->ptr.server->pending_data = NULL;
     c->ptr.server->pending_data_sz = 0;
@@ -2463,14 +2547,15 @@ int net_websocket_create_server( struct net_connection_t* conn ,
     return NET_EV_READ;
 }
 
-int net_websocket_create_client( struct net_connection_t* conn ,
+int net_ws_create_client( struct net_connection* conn ,
                                  net_ws_callback cb ,
                                  void* data , 
                                  const char* path ,
                                  const char* host) {
-    struct net_ws_conn_t* c = mem_alloc(sizeof(struct net_ws_conn_t)+sizeof(struct net_ws_ser_conn_t));
+    struct net_ws_conn* c = mem_alloc(sizeof(struct net_ws_conn)+sizeof(struct net_ws_ser_conn));
     c->type = WS_CLIENT;
-    c->ptr.client = cast(struct net_ws_cli_conn_t*,(cast(char*,c)+sizeof(struct net_ws_conn_t)));
+    c->timeout = 0;
+    c->ptr.client = cast(struct net_ws_cli_conn*,(cast(char*,c)+sizeof(struct net_ws_conn)));
     c->ptr.client->cb = cb;
     c->ptr.client->pending_data = NULL;
     c->ptr.client->pending_data_sz = 0;
@@ -2484,6 +2569,31 @@ int net_websocket_create_client( struct net_connection_t* conn ,
     conn->user_data = c; 
     return ws_cli_send_handshake(path,host,c,conn);
 }
+
+/* =============================================
+ * Client side websocket API for blocking version
+ * ============================================*/
+
+int net_ws_fd_connect( int fd , const char* path , const char* host ) {
+    char key[24];
+    char hs[1024];
+    size_t hs_sz;
+
+    if( strlen(path) >= WS_MAX_DIR_NAME || 
+        strlen(path) >= WS_MAX_HOST_NAME ) {
+            return -1;
+    }
+
+    /* sending the handshake frame here */
+    hs_sz = ws_handshake_cli_request(key,path,host,hs);
+    if( send(fd,hs,hs_sz,0) <0 ) {
+        return -1;
+    }
+
+    /* waiting for the handshake frame back */
+
+}
+
 
 #ifdef __cplusplus
 }
