@@ -100,6 +100,9 @@ int net_non_block_client_connect( struct net_server* server ,
 
 int net_non_block_connect( struct net_connection* conn , const char* addr , int timeout );
 
+struct net_connection* net_make_connection( struct net_server* server , net_ccb_func cb , 
+    const char* addr , int timeout );
+
 // timer and other socket function
 struct net_connection* net_timer( struct net_server* server , net_ccb_func cb , void* udata , int timeout );
 struct net_connection* net_fd( struct net_server* server , net_ccb_func cb , void* udata , socket_t fd , int pending_event );

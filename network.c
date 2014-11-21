@@ -778,6 +778,15 @@ int net_non_block_connect( struct net_connection* conn , const char* addr , int 
     return conn->pending_event;
 }
 
+struct net_connection* net_make_connection( struct net_server* server , net_ccb_func cb , 
+    const char* addr , int timeout ) {
+        struct net_connection* conn = connection_create(invalid_socket_handler);
+        connection_add(server,conn);
+        conn->cb = cb;
+        conn->pending_event = net_non_block_connect(conn,addr,timeout);
+        return conn;
+}
+
 // timer and socket
 struct net_connection* net_timer( struct net_server* server , net_ccb_func cb , void* udata , int timeout ) {
     struct net_connection* conn = connection_create(invalid_socket_handler);
