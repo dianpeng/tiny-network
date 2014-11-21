@@ -22,6 +22,13 @@ typedef int socket_t;
 extern "C" {
 #endif /* __cplusplus */
 
+
+/*
+ * All these value will _ONLY_ set in the event parameter
+ * and error code parameter in callback will set the errno
+ * value or getsockopt SO_ERROR value 
+ */
+
 enum {
     NET_EV_NULL  = 0,
     NET_EV_READ  = 1,
@@ -34,13 +41,15 @@ enum {
     NET_EV_CONNECT = 1 << 7,
     NET_EV_TIMEOUT = 1 << 8,
     NET_EV_IDLE = 1 << 15,
+
     /* error code */
     NET_EV_ERR_READ = 1<<16,
     NET_EV_ERR_WRITE= 1<<17,
     NET_EV_ERR_ACCEPT=1<<18,
     NET_EV_ERR_CONNECT = 1 << 19,
 
-    NET_EV_NOT_LARGE_THAN = 1 << 20
+    /* web socket error */
+    NET_EV_WS_FRAME_FAIL = 1 << 21
 };
 
 struct net_buffer_t {
@@ -132,21 +141,44 @@ void net_buffer_clean( struct net_buffer_t* );
 
 struct net_ws_conn_t;
 typedef int (*net_ws_callback)( int ev , int ec , struct net_ws_conn_t* );
-struct net_ws_conn_t* net_websocket_create( struct net_connection_t* conn , 
-                                                   net_ws_callback cb , 
-                                                   void* data );
 
-void net_websocket_destroy( struct net_ws_conn_t* conn );
+/* This is the interface that you could use to attach a websocket layer on 
+ * TCP layer. The usage is 1) create a websocket on accept callback 2)
+ * create a websocket on connected callback. 
+ * Notes:
+ * If the return value is NET_EV_NULL, it means FAIL to create websocket 
+ * otherwise a valid NET_EV event is return and you MUST return it as the
+ * return value for struct net_connection_t callback function */
+
+int net_websocket_create_server( struct net_connection_t* conn , 
+                                 net_ws_callback cb , 
+                                 void* data );
+
+int net_websocket_create_client( struct net_connection_t* conn ,
+                                 net_ws_callback cb ,
+                                 void* data , 
+                                 const char* path ,
+                                 const char* host);
 
 void* net_ws_get_udata( struct net_ws_conn_t* ws );
 void net_ws_set_udata( struct net_ws_conn_t* ws , void* data );
 
-/* this memory needs to be freed after using it */
+/* If you create a server connection, then these 2 functions will return
+ * the corresponding header in HTTP request, otherwise NULL string */
+const char* net_ws_get_path( struct net_ws_conn_t* ws );
+const char* net_ws_get_host( struct net_ws_conn_t* ws );
+
+/* this memory needs to be freed after using it. This function must be called inside
+ * of the callback function. You better check the event type to see whether it is OK
+ * to recv the data now. If you call net_ws_recv while no NET_EV_READ event happened,
+ * it will return NULL. However if a NET_EV_READ happened, but you don't call this
+ * function, you may not get the data in the next callback function since the data
+ * you haven't consumed will be wiped out and make space for the new pending data */
+
 void* net_ws_recv( struct net_ws_conn_t* ws , size_t* len );
 
 /* send the data out to the peer side */
-int net_ws_send( void* data , size_t len , size_t ppsz , int copy );
-
+int net_ws_send( struct net_ws_conn_t* ws , void* data, size_t sz);
 
 
 #ifdef __cplusplus
