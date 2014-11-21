@@ -14,7 +14,7 @@ The only 2 functions you need to know is 1) accept callback and 2) connection ca
 
 // This connection callback will be invoked after each connection registered 
 // interested events _FINISHED_ .
-int conn_cb( int ev , int ec , struct net_connection_t* conn ) {
+int conn_cb( int ev , int ec , struct net_connection* conn ) {
     if( ec ) {
         fprintf(stderr,"%s\n",strerror(errno));
         return NET_EV_CLOSE;
@@ -32,7 +32,7 @@ int conn_cb( int ev , int ec , struct net_connection_t* conn ) {
 }
 
 // This callback function will be invoked for every connection that has been accepted
-int accept_cb( int ec , struct net_server_t* ser ,struct net_connection_t* conn ) {
+int accept_cb( int ec , struct net_server* ser ,struct net_connection* conn ) {
     if( ec ) {
         fprintf(stderr,"%s\n",strerror(errno));
         return NET_EV_CLOSE;
@@ -43,7 +43,7 @@ int accept_cb( int ec , struct net_server_t* ser ,struct net_connection_t* conn 
 }
 
 int main() {
-    struct net_server_t ser;
+    struct net_server ser;
     net_init();
     if( net_server_create(&ser,"127.0.0.1:12345",accept_cb) != 0 ) {
         fprintf(stderr,"cannot create server");
