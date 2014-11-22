@@ -162,6 +162,7 @@ static int get_time_millisec() {
  *                   write_pos
  *                                  capacity */
 
+#define net_buffer_ptr(buf) ((buf)->mem)
 
 struct net_buffer* net_buffer_create( size_t cap , struct net_buffer* buf ) {
     if( cap == 0 )
@@ -2574,23 +2575,108 @@ int net_ws_create_client( struct net_connection* conn ,
  * Client side websocket API for blocking version
  * ============================================*/
 
-int net_ws_fd_connect( int fd , const char* path , const char* host ) {
-    char key[24];
+int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char* path , const char* host ) {
+    char key[16];
+    size_t buf_pos = 0;
     char hs[1024];
-    size_t hs_sz;
+    size_t sz;
+    struct ws_ser_handshake ws_hs;
+    int ret;
+
+    ws_cli->fd = invalid_socket_handler;
+    ws_cli->buf.mem = NULL;
+
+    /* Initialize the ws_cli object */
+    ws_cli->fd = net_block_client_connect(addr);
+    if( ws_cli->fd == invalid_socket_handler )
+        goto fail;
+
+    /* Initialize the buffer object */
+    net_buffer_create(1024,&(ws_cli->buf));
 
     if( strlen(path) >= WS_MAX_DIR_NAME || 
-        strlen(path) >= WS_MAX_HOST_NAME ) {
-            return -1;
+        strlen(path) >= WS_MAX_HOST_NAME )
+        goto fail;
+
+    /* Sending out the handshake package */
+    sz = ws_handshake_cli_request(key,path,host,hs);
+
+    while( (ret = send(ws_cli->fd,hs,sz,0)) < 0 ) {
+        if( errno() != EINTR )
+            goto fail;
     }
 
-    /* sending the handshake frame here */
-    hs_sz = ws_handshake_cli_request(key,path,host,hs);
-    if( send(fd,hs,hs_sz,0) <0 ) {
-        return -1;
+    /* Waiting for the handshake reply */
+    do {
+        int recv_sz = recv( ws_cli->fd , hs , 1024 , 0 );
+        void* hs_data;
+        size_t hs_data_sz;
+
+        if( recv_sz < 0 ) {
+            if( errno() == EINTR )
+                continue;
+        } else if( recv_sz == 0 )
+            goto fail; /* EOF */
+
+        net_buffer_produce(&(ws_cli->buf),hs,recv_sz);
+
+        hs_data_sz = net_buffer_readable_size(&(ws_cli->buf));
+        hs_data = net_buffer_peek(&(ws_cli->buf),&hs_data_sz);
+        ret = ws_ser_handshake_parse(hs_data,hs_data_sz,&ws_hs);
+
+        if( ret == 0 ) {
+            /* The handshake package is entirely received, just check
+             * its key is OK or not here */
+            if( ws_cli_validate_handshake(&ws_hs,key) != 0 )
+                goto fail;
+            break;
+        } else {
+            if( ret < 0 )
+                goto fail;
+            else {
+                sz = cast(size_t,ret);
+                net_buffer_consume(&(ws_cli->buf),&sz);
+            }
+        }
+    } while(1);
+
+    /* when we reach here, it means the connection is finished now */
+    return 0;
+
+fail:
+    if( ws_cli->fd != invalid_socket_handler )
+        closesocket(ws_cli->fd);
+    if( ws_cli->buf.mem != NULL )
+        net_buffer_clean(&(ws_cli->buf));
+    return -1;
+}
+
+int net_ws_fd_send( struct ws_client* ws_cli , void* data , size_t sz ) {
+    void* frame = ws_make_frame(data,&sz,1,WS_BINARY,0);
+    int ret;
+    while( (ret =send(ws_cli->fd,frame,sz,0)) <0 )
+        if( errno() != EINTR )
+            goto fail;
+    free(frame);
+    return 0;
+fail:
+    return -1;
+}
+
+int net_ws_fd_recv( struct ws_client* ws_cli, void* buf , size_t buf_sz ) {
+    char buf[1024];
+    int ret;
+    struct ws_frame fr;
+
+    while(1) {
+        ret = recv(ws_cli->fd,buf,1024,0);
+        if( ret < 0 && errno() != EINTR )
+            goto fail;
+
+        /* We need to handle different package here manually */
     }
 
-    /* waiting for the handshake frame back */
+fail:
 
 }
 

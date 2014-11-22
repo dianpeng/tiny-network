@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2012
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "litenet", "litenet.vcxproj", "{3EC91E4E-08F7-4163-A40E-9B5672EB0BFB}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test", "..\test\test.vcxproj", "{20278A1C-B144-40B5-BAE0-69E1E1CBC7D1}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test", "test.vcxproj", "{20278A1C-B144-40B5-BAE0-69E1E1CBC7D1}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "testC", "..\testC\testC.vcxproj", "{A59F5A8B-3CAB-4A4C-923E-9BC8396BEC98}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "testC", "testC.vcxproj", "{A59F5A8B-3CAB-4A4C-923E-9BC8396BEC98}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

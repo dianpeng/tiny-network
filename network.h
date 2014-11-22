@@ -59,7 +59,7 @@ struct net_buffer {
 
 struct net_connection;
 
-typedef int (*net_ccb_func)( int , int , struct net_connection_t* );
+typedef int (*net_ccb_func)( int , int , struct net_connection* );
 
 struct net_connection {
     struct net_connection* next; /* private field */
@@ -75,7 +75,7 @@ struct net_connection {
 
 struct net_server;
 
-typedef int (*net_acb_func)( int err_code , struct net_server_t* , struct net_connection* connection );
+typedef int (*net_acb_func)( int err_code , struct net_server* , struct net_connection* connection );
 
 struct net_server {
     void* user_data;
@@ -90,10 +90,10 @@ struct net_server {
 void net_init();
 
 /* server function */
-int net_server_create( struct net_server_t* , const char* addr , net_acb_func cb );
-void net_server_destroy( struct net_server_t* );
-int net_server_poll( struct net_server_t* ,int , int* );
-int net_server_wakeup( struct net_server_t* );
+int net_server_create( struct net_server* , const char* addr , net_acb_func cb );
+void net_server_destroy( struct net_server* );
+int net_server_poll( struct net_server* ,int , int* );
+int net_server_wakeup( struct net_server* );
 
 /* client function */
 socket_t net_block_client_connect( const char* addr );
@@ -117,11 +117,11 @@ void net_stop( struct net_connection* conn );
 void net_post( struct net_connection* conn , int ev );
 
 /* buffer function */
-void* net_buffer_consume( struct net_buffer_t* , size_t* );
-void* net_buffer_peek( struct net_buffer_t*  , size_t* );
-void net_buffer_produce( struct net_buffer_t* , const void* data , size_t );
-struct net_buffer* net_buffer_create( size_t cap , struct net_buffer_t* );
-void net_buffer_clean( struct net_buffer_t* );
+void* net_buffer_consume( struct net_buffer* , size_t* );
+void* net_buffer_peek( struct net_buffer*  , size_t* );
+void net_buffer_produce( struct net_buffer* , const void* data , size_t );
+struct net_buffer* net_buffer_create( size_t cap , struct net_buffer* );
+void net_buffer_clean( struct net_buffer* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
 
@@ -138,7 +138,7 @@ void net_buffer_clean( struct net_buffer_t* );
  * means the server side handshake package has been received and verified */
 
 struct net_ws_conn;
-typedef int (*net_ws_callback)( int ev , int ec , struct net_ws_conn_t* );
+typedef int (*net_ws_callback)( int ev , int ec , struct net_ws_conn* );
 
 /* This is the interface that you could use to attach a websocket layer on 
  * TCP layer. The usage is 1) create a websocket on accept callback 2)
@@ -185,11 +185,16 @@ void* net_ws_recv( struct net_ws_conn* ws , size_t* len );
 int net_ws_send( struct net_ws_conn* ws , void* data, size_t sz);
 
 /* Blocking version API for web socket at client side */
-int net_ws_fd_connect( int fd , const char* path , const char* host );
-int net_ws_fd_send( int fd , void* data , size_t sz );
-int net_ws_fd_recv( int fd , void* buf , size_t buf_sz );
-int net_ws_fd_close( int fd );
-int net_ws_fd_ping( int fd );
+struct ws_client {
+    socket_t fd;
+    struct net_buffer buf;
+};
+
+int net_ws_fd_connect( struct ws_client* , const char* addr , const char* path , const char* host );
+int net_ws_fd_send( struct ws_client* , void* data , size_t sz );
+int net_ws_fd_recv( struct ws_client*, void* buf , size_t buf_sz );
+int net_ws_fd_close( struct ws_client* );
+int net_ws_fd_ping( struct ws_client* );
 
 #ifdef __cplusplus
 }
