@@ -485,6 +485,13 @@ static int dispatch( struct net_server* server , fd_set* read_set , fd_set* writ
         // timeout
         if( (conn->pending_event & NET_EV_TIMEOUT) ||
             (conn->pending_event & NET_EV_TIMEOUT_AND_CLOSE) ) {
+            if( FD_ISSET(conn->socket_fd,read_set) || FD_ISSET(conn->socket_fd,write_set) ) {
+                if( !(conn->pending_event & NET_EV_NULL) ) {
+                    // error happened, just remove this file descriptor in the reclaim phase
+                    conn->pending_event = NET_EV_CLOSE;
+                    continue;
+                }
+            }
             if( conn->timeout <= time_diff || conn->timeout == 0 ) {
                 ev |= (conn->pending_event & NET_EV_TIMEOUT) ? NET_EV_TIMEOUT : NET_EV_TIMEOUT_AND_CLOSE;
             } else {
