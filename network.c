@@ -861,12 +861,12 @@ size_t b64_encode( const char *src, size_t src_len, char *dst ) {
 
     /* tail */
     switch( j % 4 ) {
-    case '2':
+    case 2:
         dst[j+1] = '=';
         dst[j+2] = '=';
         j += 2;
         break;
-    case '3':
+    case 3:
         dst[j+1] = '=';
         ++j;
         break;
@@ -916,7 +916,7 @@ int b64_decode( const char *src, size_t src_len, char *dst , size_t dst_len ) {
         if( b1 == 254 || b2 == 254 ) 
             return -1; 
 
-        *dst = b1 << 2 | b2 >> 4;
+        *dst++ = b1 << 2 | b2 >> 4;
         /* = */
         if (b3 == 254) break;
         *dst++ = b2 << 4 | b3 >> 2;
@@ -1125,7 +1125,8 @@ struct ws_cli_handshake {
     unsigned char upgrade: 1;
     unsigned char connection: 1;
     unsigned char ws_version:1;
-    unsigned char line_num:5; /* the 5 bits is used for storing HTTP line number 
+    unsigned char done:1;
+    unsigned char line_num:4; /* the 4 bits is used for storing HTTP line number 
                                * which is way more than enough for web socket */
 };
 
@@ -1137,6 +1138,7 @@ struct ws_cli_handshake {
         (c)->upgrade=0; \
         (c)->connection=0; \
         (c)->ws_version=0; \
+        (c)->done = 0 ; \
         (c)->line_num = 0; \
     } while(0)
 
@@ -1148,18 +1150,32 @@ struct ws_cli_handshake {
 
 static
 int http_readline( const char* c , size_t len , int* eof ) {
-    /* read until /r/n is find out */
+    /* read until \r\n is find out */
     size_t i = 0;
+    const void* pos;
     *eof = 0;
-    for ( ; i < len ; ++i )
-        if ( c[i] == '\r' && (i+1 < len && c[i+1]== '\n') ) {
-            i+=2;
-            if( (i < len && c[i] == '\r') && (i+1 < len && c[i+1]== '\n') ) {
+
+    pos = memchr(c,'\n',len);
+    if( pos == NULL )
+        return -1;
+    /* Checking the \r\n and \r\n\r\n pattern */
+    if( *(cast(const char*,pos)-1) == '\r' ) {
+        /* Checking if we meet the end of the header */
+        if( cast(const char*,pos) - c + 2 <= cast(int,len) ) {
+            const char* nc = cast(const char*,pos)+1;
+            if( nc[0]== '\r' && nc[1] == '\n' )
                 *eof = 1;
-            }
-            return i;
+        } else {
+            /* Checking if we are the last line by saying that
+             * we have an extra \r\n as the only elements in line */
+            if(cast(const char*,pos)-c == 2)
+                *eof = 1;
         }
-    return -1;
+        /* tell the caller that we have got at least one line */
+        return cast(const char*,pos)-c+1;
+    } else {
+        return -1;
+    }
 }
 
 /* WebSocket server side HTTP part operation */
@@ -1195,7 +1211,7 @@ int ws_cli_handshake_check_first_line( const char* data , char* dir ) {
      * it is to do it manually by our hand. */
 
     /* 1. Parsing METHOD and it must be GET */
-    if( data[0] != 'G' || data[1] != 'E' || data[2] == 'T' || data[3] != ' ' )
+    if( data[0] != 'G' || data[1] != 'E' || data[2] != 'T' || data[3] != ' ' )
         return WS_UNKNOWN_METHOD;
 
     /* 2. Parsing the URI */
@@ -1213,11 +1229,11 @@ int ws_cli_handshake_check_first_line( const char* data , char* dir ) {
 
     /* 3. Parsing HTTP */
     data += http_skip(data,' ');
-    if( data[0] != 'H' || data[1] != 'H' || data[2] != 'T' && data[3] !='P' && data[4] != '/' )
+    if( data[0] != 'H' || data[1] != 'T' || data[2] != 'T' && data[3] !='P' && data[4] != '/' )
         return WS_UNKNOWN_REQUEST_HEADER;
     data +=5;
 
-    if( data[5] != '1' || data[6] != '.' || data[7] != '1' )
+    if( data[0] != '1' || data[1] != '.' || data[2] != '1' )
         return WS_NOT_SUPPORT_HTTP_VERSION;
 
     return 0;
@@ -1255,7 +1271,6 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
         num = http_readline(data,len,&eof);
         if (num == -1)
             return data-s;
-
         cast(char*,data)[num-2] = 0;
         /* we have at least one line data now */
         if ( hs->line_num == 0 ) {
@@ -1263,10 +1278,15 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
             ret = ws_cli_handshake_check_first_line(data,hs->dir);
             if( ret != 0 )
                 goto fail;
-
+            data += ret;
+            ++hs->line_num;
         } else {
             const char* semicon;
             semicon = strchr(data,':');
+            if( semicon == NULL ) {
+                ret = WS_UNKNOWN_REQUEST_HEADER;
+                goto fail;
+            }
             *cast(char*,semicon) = 0;
 
             if( strccamp(data,"Upgrade") == 0 ) {
@@ -1310,7 +1330,7 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
                     *cast(char*,semicon) = ':';
                     goto fail;
                 }
-                memcpy( hs->ws_key , semicon , 16 );
+                memcpy( hs->ws_key , semicon+i , 16 );
                 goto again;
             } else if( strccamp(data,"Host") == 0 ) {
                 int i = 1;
@@ -1348,6 +1368,7 @@ loop:   /* move to next line */
 
     /* checking the EOF */
     if( hs->upgrade && hs->connection && hs->ws_version && hs->ws_key[0] && hs->host[0] ) {
+        hs->done = 1;
         return 0;
     } else {
         return WS_UNKNOWN_REQUEST_HEADER;
@@ -1360,7 +1381,7 @@ fail: /* done */
 
 /* Generate WebSocket reply for successful upgrade */
 static
-size_t ws_handshake_ser_reply( struct ws_cli_handshake* hs , char ret[1024] ) {
+size_t ws_handshake_ser_reply( const char ws_key[16] , char ret[1024] ) {
     static const char WS_FORMAT[] = \
         "HTTP/1.1 101 Switching Protocols\r\n" \
         "Upgrade:websocket\r\n" \
@@ -1372,7 +1393,7 @@ size_t ws_handshake_ser_reply( struct ws_cli_handshake* hs , char ret[1024] ) {
     char buf[128];
     SHA1_CTX shal_ctx;
     uint8_t digest[SHA1_DIGEST_SIZE];
-    size_t len = cast(size_t, sprintf(buf,"%s%s",hs->ws_key,WS_KEY_COOKIE) );
+    size_t len = cast(size_t, sprintf(buf,"%s%s",ws_key,WS_KEY_COOKIE) );
 
     /* shal1 these key */
     SHA1_Init(&shal_ctx);
@@ -1384,14 +1405,13 @@ size_t ws_handshake_ser_reply( struct ws_cli_handshake* hs , char ret[1024] ) {
     assert( len + WS_FORMAT_LEN + 4 < 1024 );
 
     /* now write to the output buffer */
-
     memcpy(ret,WS_FORMAT,WS_FORMAT_LEN);
     memcpy(ret+WS_FORMAT_LEN,buf,len);
 
-    ret[WS_FORMAT_LEN+len+1]= '\r';
-    ret[WS_FORMAT_LEN+len+2]= '\n';
-    ret[WS_FORMAT_LEN+len+3]= '\r';
-    ret[WS_FORMAT_LEN+len+4]= '\n';
+    ret[WS_FORMAT_LEN+len]= '\r';
+    ret[WS_FORMAT_LEN+len+1]= '\n';
+    ret[WS_FORMAT_LEN+len+2]= '\r';
+    ret[WS_FORMAT_LEN+len+3]= '\n';
 
     return len + 4 + WS_FORMAT_LEN;
 }
@@ -1987,8 +2007,10 @@ int ws_ser_handle_handshake( struct net_ws_conn* ws_conn , struct net_connection
     void* data;
     size_t len = net_buffer_readable_size(&(conn->in));
     struct net_ws_ser_conn* c = ws_conn->ptr.server;
-    int ret = ws_cli_handshake_parse(cast(const char*,data),len,&(c->ws_hs));
+    int ret;
+
     data = net_buffer_peek(&(conn->in),&len);
+    ret = ws_cli_handshake_parse(cast(const char*,data),len,&(c->ws_hs));
 
     if( ret < 0 ) {
         /* sending the failed reply */
@@ -2001,16 +2023,20 @@ int ws_ser_handle_handshake( struct net_ws_conn* ws_conn , struct net_connection
         conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
         return NET_EV_LINGER_SILENT | NET_EV_TIMEOUT;
     } else if( ret == 0 ) {
-        char reply[1024];
-        size_t size = ws_handshake_ser_reply(&(c->ws_hs),reply);
-        /* handshake done , we just need to send the reply */
-        net_buffer_produce(&(conn->out),reply,size);
-        /* consume the data now */
-        len = net_buffer_readable_size(&(conn->in));
-        net_buffer_consume(&(conn->in),&len);
-        /* moving the state of this web socket */
-        c->ws_state = WS_HANDSHAKE_SEND;
-        return NET_EV_WRITE;
+        if( c->ws_hs.done ) {
+            char reply[1024];
+            size_t size = ws_handshake_ser_reply(c->ws_hs.ws_key,reply);
+            /* handshake done , we just need to send the reply */
+            net_buffer_produce(&(conn->out),reply,size);
+            /* consume the data now */
+            len = net_buffer_readable_size(&(conn->in));
+            net_buffer_consume(&(conn->in),&len);
+            /* moving the state of this web socket */
+            c->ws_state = WS_HANDSHAKE_SEND;
+            return NET_EV_WRITE;
+        } else {
+            return NET_EV_READ;
+        }
     } else {
         /* pending */
         len = cast(size_t,ret);
@@ -2040,7 +2066,7 @@ int ws_do_frag( struct ws_frame* fr , int* state ) {
             *state = WS_WANT_FRAG;
         }
         return 0;
-    } else if( * state == WS_WANT_FRAG ) {
+    } else if( *state == WS_WANT_FRAG ) {
         if( fr->fin ) {
             if( fr->op == 0 ) {
                 /* last segment */
@@ -2054,6 +2080,9 @@ int ws_do_frag( struct ws_frame* fr , int* state ) {
             }
         }
         return 0;
+    } else {
+        assert(0);
+        return -1;
     }
 }
 
@@ -2084,7 +2113,7 @@ int ws_do_pingpong( struct ws_frame* fr , struct net_connection* conn , int* sen
             /* Error here, we need to close this connection */
             return -1;
         }
-    default:assert(0);
+    default:assert(0); return -1;
     }
 }
 
@@ -2242,6 +2271,7 @@ int ws_ser_conn_callback( int ev , int ec , struct net_connection* conn ) {
                 c->cb( ev , 0 , ws_conn ) , ws_conn ,conn );
         }
     }
+    return NET_EV_CLOSE;
 }
 
 static int ws_cli_validate_handshake( const struct ws_ser_handshake* hs , char rand_key[16] ) {
@@ -2445,6 +2475,7 @@ int ws_cli_conn_callback( int ev , int ec , struct net_connection* conn ) {
                 c->cb( ev , 0 , ws_conn ) , ws_conn ,conn);
         }
     }
+    return NET_EV_CLOSE;
 }
 
 void* net_ws_get_udata( struct net_ws_conn* ws ) {
@@ -2544,7 +2575,7 @@ int net_ws_create_server( struct net_connection* conn ,
     INITIALIZE_WS_FRAME( &(c->ptr.server->ws_frame) );
     INITIALIZE_WS_CLI_HANDSHAKE( &(c->ptr.server->ws_hs) );
     conn->user_data = c;
-
+    conn->cb = ws_ser_conn_callback;
     return NET_EV_READ;
 }
 
@@ -2568,6 +2599,7 @@ int net_ws_create_client( struct net_connection* conn ,
     INITIALIZE_WS_FRAME( &(c->ptr.client->ws_frame) );
     INITIALIZE_WS_SER_HANDSHAKE( &(c->ptr.client->ws_hs) );
     conn->user_data = c; 
+    conn->cb = ws_cli_conn_callback;
     return ws_cli_send_handshake(path,host,c,conn);
 }
 
@@ -2602,19 +2634,22 @@ int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char*
     sz = ws_handshake_cli_request(key,path,host,hs);
 
     while( (ret = send(ws_cli->fd,hs,sz,0)) < 0 ) {
-        if( errno() != EINTR )
+        if( errno != EINTR )
             goto fail;
     }
 
     /* Waiting for the handshake reply */
     do {
-        int recv_sz = recv( ws_cli->fd , hs , 1024 , 0 );
+        int recv_sz;
         void* hs_data;
         size_t hs_data_sz;
 
+        recv_sz = recv( ws_cli->fd , hs , 1024 , 0 );
+
         if( recv_sz < 0 ) {
-            if( errno() == EINTR )
+            if( errno == EINTR )
                 continue;
+            goto fail;
         } else if( recv_sz == 0 )
             goto fail; /* EOF */
 
@@ -2652,10 +2687,13 @@ fail:
 }
 
 int net_ws_fd_send( struct ws_client* ws_cli , void* data , size_t sz ) {
-    void* frame = ws_make_frame(data,&sz,1,WS_BINARY,0);
+    void* frame;
     int ret;
+    assert( ws_cli->fd != invalid_socket_handler );
+
+    frame = ws_make_frame(data,&sz,1,WS_BINARY,0);
     while( (ret =send(ws_cli->fd,frame,sz,0)) <0 )
-        if( errno() != EINTR )
+        if( errno != EINTR )
             goto fail;
     free(frame);
     return 0;
@@ -2663,24 +2701,158 @@ fail:
     return -1;
 }
 
-int net_ws_fd_recv( struct ws_client* ws_cli, void* buf , size_t buf_sz ) {
-    char buf[1024];
+/* 
+ * Recv function. This function needs to handle different situations
+ * 1) Close
+ * 2) Ping
+ * 3) Data frame
+ */
+
+static
+int net_ws_fd_handle_ctrl_frame( struct ws_client* ws_cli , const struct ws_frame* fr ) {
+    void* pong_fr;
+    size_t pong_fr_len;
+    int ret;
+
+    switch(fr->op) {
+    case WS_CLOSE:
+        /* Return zero to simulate the system socket behavior*/
+        return 0;
+    case WS_PING:
+        /* The ping operations, we need to handle it with PONG 
+         * frame here */
+        pong_fr_len = 0;
+        pong_fr = ws_make_frame(NULL,&pong_fr_len,0,WS_PONG,0);
+        /* send this piece of data out of bound here */
+        ret = send(ws_cli->fd,pong_fr,pong_fr_len,0);
+        free(pong_fr);
+
+        if( ret == 0 ) {
+            return 0;
+        } else {
+            if( ret < 0 )
+                return -1;
+        }
+
+        return 1;
+    default:
+        assert(0);
+        return -1;
+    }
+}
+
+void* net_ws_fd_recv( struct ws_client* ws_cli , size_t* buf_sz ) {
+    void* data;
+    size_t sz;
     int ret;
     struct ws_frame fr;
+    char buf[1024];
 
-    while(1) {
+    INITIALIZE_WS_FRAME(&fr);
+
+    /* feed it with ws_frame_parse function */
+    do {
+        sz = net_buffer_readable_size(&(ws_cli->buf));
+
+        if( sz > 0 ) {
+            data = net_buffer_peek(&(ws_cli->buf),&sz);
+            ret = ws_frame_parse(data,sz,&fr);
+        } else {
+            ret = 0;
+        }
+
+        if( ret < 0 ) {
+            /* The frame has an error internally */
+            DESTROY_WS_FRAME(&fr);
+            return NULL;
+        } else if( ret >= 0 ) {
+            sz = cast(size_t,ret);
+            net_buffer_consume(&(ws_cli->buf),&sz);
+        }
+        
+        if( fr.state == WS_FP_DONE ) {
+            /* Checking if it is the control package */
+            switch(fr.op) {
+            case WS_PING:
+            case WS_CLOSE:
+                ret = net_ws_fd_handle_ctrl_frame(ws_cli,&fr);
+                DESTROY_WS_FRAME(&fr);
+                if( fr.op == WS_CLOSE ) {
+                    return NULL;
+                } else {
+                    /* Redo the job again after getting a PING message */
+                    continue;
+                }
+            case WS_BINARY:
+                goto done;
+            default:
+                /* Unknown message type, just ignore this frame and return
+                 * error */
+                DESTROY_WS_FRAME(&fr);
+                return NULL;
+            }
+        }
+
+        /* read data from the socket , very sloppy method */
         ret = recv(ws_cli->fd,buf,1024,0);
-        if( ret < 0 && errno() != EINTR )
-            goto fail;
 
-        /* We need to handle different package here manually */
-    }
+        if( ret ==0 ) {
+            DESTROY_WS_FRAME(&fr);
+            return 0;
+        } else if( ret < 0 ) {
+            return NULL;
+        } else {
+            net_buffer_produce(&(ws_cli->buf),buf,ret);
+        }
 
-fail:
+    } while(1);
 
+done:
+    /* When we reach here, we get a complete message packet. */
+    assert( fr.data != NULL && fr.data_len != 0 );
+    *buf_sz = cast(size_t,fr.data_len);
+    return fr.data;
+}
+
+int net_ws_fd_close( struct ws_client* ws_cli ) {
+    void* close_fr;
+    size_t close_fr_sz = 0;
+    int ret;
+
+    close_fr = ws_make_frame(NULL,&close_fr_sz,0,WS_CLOSE,0);
+
+    while( (ret =send(ws_cli->fd,close_fr,close_fr_sz,0)) <0 )
+        if( errno != EINTR )
+            break;
+    free(close_fr);
+    closesocket(ws_cli->fd);
+    net_buffer_clean(&(ws_cli->buf));
+    return 0;
+}
+
+int net_ws_fd_ping( struct ws_client* ws_cli ) {
+    void* ping_fr;
+    size_t ping_fr_sz = 0;
+    int ret;
+
+    ping_fr = ws_make_frame(NULL,&ping_fr_sz,0,WS_PING,0);
+
+    while( (ret = send(ws_cli->fd,ping_fr,ping_fr_sz,0)) < 0 )
+        if( errno != EINTR ) {
+            ret = -1;
+            break;
+        }
+
+    free(ping_fr);
+    return ret >0 ? 0 : -1;
 }
 
 
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
+
+#ifdef TEST
+#include "test.c"
+#endif /* TEST */
+

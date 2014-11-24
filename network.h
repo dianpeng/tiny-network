@@ -125,7 +125,6 @@ void net_buffer_clean( struct net_buffer* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
 
-
 /* =================================
  * Web socket 
  * ================================*/
@@ -192,7 +191,8 @@ struct ws_client {
 
 int net_ws_fd_connect( struct ws_client* , const char* addr , const char* path , const char* host );
 int net_ws_fd_send( struct ws_client* , void* data , size_t sz );
-int net_ws_fd_recv( struct ws_client*, void* buf , size_t buf_sz );
+/* Free the return buffer after using it */
+void* net_ws_fd_recv( struct ws_client*, size_t* buf_sz );
 int net_ws_fd_close( struct ws_client* );
 int net_ws_fd_ping( struct ws_client* );
 
