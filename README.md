@@ -60,6 +60,10 @@ The above is a echo server that works well.
 
 Just notify the tiny network library what you want to do in next callback and then all the IO operations will be performed correctly.
 
+##WebSocket
+
+Tiny network supports web socket protocol with 1) Non blocking WebSocket server/client API with same semantic as TCP 2) Blocking version WebSocket client API.
+
 ##Build
 1. Make
 2. Visual Studio

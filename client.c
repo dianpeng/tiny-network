@@ -22,6 +22,9 @@ int main() {
     VERIFY( net_ws_fd_send(&cl,hello_world,12) == 0 );
     recv_buf = net_ws_fd_recv(&cl,&recv_sz);
     VERIFY( recv_buf != NULL );
+    VERIFY( net_ws_fd_send(&cl,hello_world,12) == 0 );
+    recv_buf = net_ws_fd_recv(&cl,&recv_sz);
+    VERIFY( recv_buf != NULL );
     VERIFY( net_ws_fd_close(&cl) == 0 );
     printf(recv_buf);
     printf("Done");
