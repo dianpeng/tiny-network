@@ -9,21 +9,26 @@ static int ws_cb( int ev , int ec , struct net_ws_conn* ws_conn ) {
         return NET_EV_CLOSE;
     } else {
         if( ev & NET_EV_CONNECT ) {
-            printf("Connected");
+            printf("Connected(%s%s)\n",net_ws_get_path(ws_conn),net_ws_get_host(ws_conn));
             return NET_EV_READ;
         } else if( ev & NET_EV_READ ) {
             size_t len ;
             void* data;
             data = net_ws_recv(ws_conn,&len);
+            net_hex_dump("Data:",data,len);
             net_ws_send(ws_conn,data,len);
             free(data);
             printf("Data received!\n");
             return NET_EV_WRITE;
         } else if( ev & NET_EV_WRITE ) {
             printf("Data sent!\n");
+            return NET_EV_READ;
+        } else if( ev & NET_EV_EOF ) {
+            printf("Good bye!\n");
             return NET_EV_CLOSE;
         }
     }
+    return NET_EV_CLOSE;
 }
 
 static int accept_cb( int ec , struct net_server* s , struct net_connection* conn ) {

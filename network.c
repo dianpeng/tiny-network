@@ -65,11 +65,6 @@ static void* mem_alloc( size_t cap ) {
     return ret;
 }
 
-static void mem_free( void* ptr ) {
-    assert(ptr);
-    free(ptr);
-}
-
 static void* mem_realloc( void* ptr , size_t cap ) {
     void* ret;
     assert(cap !=0);
@@ -98,12 +93,23 @@ static void exec_socket( socket_t sock ) {
 #endif
 }
 
-static void nb_socket( socket_t sock ) {
+static void nonblock_socket( socket_t sock ) {
 #ifdef _WIN32
     unsigned long on = 1;
     ioctlsocket(sock, FIONBIO, &on);
 #else
     int f = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, f | O_NONBLOCK);
+#endif /* _WIN32 */
+}
+
+static void block_socket( socket_t sock ) {
+#ifdef _WIN32
+    unsigned long off = 0;
+    ioctlsocket(sock,FIONBIO,&off);
+#else
+    int f = fcntl(sock,F_GETFL,0);
+    f &= ~O_NONBLOCK;
     fcntl(sock, F_SETFL, f | O_NONBLOCK);
 #endif /* _WIN32 */
 }
@@ -122,7 +128,9 @@ static int net_has_error() {
     int ret = WSAGetLastError();
     if( ret == 0 ) return 0;
     else {
-        if( ret == WSAEWOULDBLOCK || ret == WSAEINTR )
+        if( ret == WSAEWOULDBLOCK || 
+            ret == WSAEINTR ||
+            ret == WSAECONNRESET )
             return 0;
         else
             return ret;
@@ -133,6 +141,7 @@ static int net_has_error() {
         errno != EWOULDBLOCK &&
         errno != EINTR &&
         errno != EINPROGRESS &&
+        errno != ECONNABORTED &&
         errno != 0 ) return errno;
     else return 0;
 #endif
@@ -156,6 +165,32 @@ static int get_time_millisec() {
 #endif
 }
 
+void net_hex_dump ( const char *desc, const void *addr, size_t len) {
+    size_t i;
+    unsigned char buff[17];
+    unsigned char *pc = (unsigned char*)addr;
+    if (desc != NULL)
+        printf ("%s:\n", desc);
+    for (i = 0; i < len; i++) {
+        if ((i % 16) == 0) {
+            if (i != 0)
+                printf ("  %s\n", buff);
+            printf ("  %04x ", i);
+        }
+        printf (" %02x", pc[i]);
+        if ((pc[i] < 0x20) || (pc[i] > 0x7e))
+            buff[i % 16] = '.';
+        else
+            buff[i % 16] = pc[i];
+        buff[(i % 16) + 1] = '\0';
+    }
+    while ((i % 16) != 0) {
+        printf ("   ");
+        i++;
+    }
+    printf ("  %s\n", buff);
+}
+
 /* buffer internal data structure
  * [--- write buffer -- -- extra ---]
  *       read_pos
@@ -176,7 +211,8 @@ struct net_buffer* net_buffer_create( size_t cap , struct net_buffer* buf ) {
 
 void net_buffer_clean( struct net_buffer* buf ) {
     if(buf->mem)
-        mem_free(buf->mem);
+        free(buf->mem);
+    buf->mem = NULL;
     buf->consume_pos = buf->produce_pos = buf->capacity = 0;
 }
 
@@ -287,7 +323,7 @@ static struct net_connection* connection_destroy( struct net_connection* conn ) 
     conn->next->prev = conn->prev;
     net_buffer_clean(&(conn->in));
     net_buffer_clean(&(conn->out));
-    mem_free(conn);
+    free(conn);
     return ret;
 }
 
@@ -314,7 +350,7 @@ int net_server_create( struct net_server* server, const char* addr , net_acb_fun
         server->listen_fd = socket(AF_INET,SOCK_STREAM,0);
         if( server->listen_fd == invalid_socket_handler )
             return -1;
-        nb_socket(server->listen_fd);
+        nonblock_socket(server->listen_fd);
         exec_socket(server->listen_fd);
         /* reuse the addr */
         reuse_socket(server->listen_fd);
@@ -342,7 +378,7 @@ int net_server_create( struct net_server* server, const char* addr , net_acb_fun
             closesocket(server->listen_fd);
         return -1;
     }
-    nb_socket(server->ctrl_fd);
+    nonblock_socket(server->ctrl_fd);
     exec_socket(server->ctrl_fd);
     memset(&ipv4,0,sizeof(ipv4));
     /* setting the localhost address for the ctrl udp */
@@ -386,7 +422,7 @@ void net_server_destroy( struct net_server* server ) {
     server->ctrl_fd = server->listen_fd = invalid_socket_handler;
 #ifdef MULTI_SERVER_ENABLE
     if( server->reserve_buffer != NULL )
-        mem_free(server->reserve_buffer);
+        free(server->reserve_buffer);
 #endif /* MULTI_SERVER_ENABLE */
 }
 
@@ -443,7 +479,6 @@ static void prepare_fd( struct net_server* server , fd_set* read_set , fd_set* w
         /* read/write , connect , lingerXXX , close */
         if( (conn->pending_event & NET_EV_READ) || (conn->pending_event & NET_EV_WRITE) ) {
             assert( !(conn->pending_event & NET_EV_LINGER) &&
-                !(conn->pending_event & NET_EV_LINGER_SILENT) &&
                 !(conn->pending_event & NET_EV_CONNECT) &&
                 !(conn->pending_event & NET_EV_CLOSE) );
             if( conn->pending_event & NET_EV_READ ) {
@@ -453,13 +488,10 @@ static void prepare_fd( struct net_server* server , fd_set* read_set , fd_set* w
                 ADD_FSET(write_set,conn->socket_fd,max_fd);
             }
         } else {
-            if( (conn->pending_event & NET_EV_LINGER) || (conn->pending_event & NET_EV_LINGER_SILENT) ) {
+            if( conn->pending_event & NET_EV_LINGER ) {
                 assert( !(conn->pending_event & NET_EV_CONNECT) &&
                     !(conn->pending_event & NET_EV_CLOSE) );
                 if( prepare_linger(conn,write_set,max_fd) !=0 ) {
-                    if( conn->pending_event & NET_EV_LINGER ) {
-                        connection_cb(NET_EV_LINGER,0,conn);
-                    }
                     if( conn->pending_event & NET_EV_TIMEOUT && conn->timeout > 0 )
                         conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
                     else
@@ -549,15 +581,12 @@ static int dispatch( struct net_server* server , fd_set* read_set , fd_set* writ
             continue;
         }
         /* linger */
-        if( ((conn->pending_event & NET_EV_LINGER) || (conn->pending_event & NET_EV_LINGER_SILENT)) && FD_ISSET(conn->socket_fd,write_set) ) {
+        if( (conn->pending_event & NET_EV_LINGER) && FD_ISSET(conn->socket_fd,write_set) ) {
             ec = 0;
             ret = do_write(conn,&ec);
             if( ret <= 0 ) {
                 conn->pending_event = NET_EV_CLOSE;
             } else if( net_buffer_readable_size(&(conn->out)) == 0 ) {
-                if( conn->pending_event & NET_EV_LINGER ) {
-                    connection_cb(NET_EV_LINGER,ec,conn);
-                }
                 if( (conn->pending_event & NET_EV_TIMEOUT) && (conn->timeout >0) ) {
                     conn->pending_event = NET_EV_TIMEOUT_AND_CLOSE;
                 } else {
@@ -668,7 +697,7 @@ static void do_accept( struct net_server* server ) {
             return;
         } else {
             int pending_ev;
-            nb_socket(sock);
+            nonblock_socket(sock);
             conn = connection_create(sock);
             connection_add(server,conn);
             conn->pending_event = NET_EV_CLOSE;
@@ -724,44 +753,214 @@ static int do_connected( struct net_connection* conn , int* error_code ) {
     }
 }
 
-/* client function */
-socket_t net_block_client_connect( const char* addr ) {
-    struct sockaddr_in ipv4;
+/* ==========================================
+ * Timeout blocking version socket API 
+ * =========================================*/
+
+/* The following function serves as a advanced version for socket
+ * API since it can be assigned with a timeout value to the underlying
+ * socket operations. The resolution for these timers are seconds.
+ * These functions will use select function to append the timeout 
+ * attributes for each underlying operations. */
+
+static
+int connect_tm( socket_t fd , const char* addr , const struct timeval* tm ) {
+    /* Using select to issue connect is something that make sense
+     * since this make the socket much more robust since if an 
+     * interruption happened, YOU CANNOT CALL connect again. Only
+     * select can help you properly block on it and learn there
+     * will be a sensible events gonna happen */
+    struct sockaddr_in sock;
     int ret;
-    socket_t sock;
-    if( str_to_sockaddr(addr,&ipv4) != 0 ) {
-        return invalid_socket_handler;
+    FD_SET write;
+    int val;
+    size_t len;
+
+    /* The address cannot be parsed into the sockaddr_in struct */
+    if( str_to_sockaddr(addr,&sock) != 0 ) 
+        return -1;
+
+    if( tm == NULL ) {
+        /* When we reach here, it means that we don't have to do anything
+         * since the semantic underlying represents a BLOCK CONNECT */
+        return connect(fd,cast(const struct sockaddr*,&sock),sizeof(sock));
+    }
+
+    ret = connect(fd,cast(const struct sockaddr*,&sock),sizeof(sock));
+
+    /*
+     * This should return at once since the fd is a non blocking
+     * fd , and we put an assertion here to help user figure out
+     * what they have messed up */
+#ifdef _WIN32
+    assert( ret == WSAEWOULDBLOCK || ret == 0 );
+#else
+    assert( ret == EINPROGRESSqa|| ret == 0 );
+#endif /* _WIN32 */
+
+    /* On some platform, the connect will succeed immdietaly 
+     * so we need to handle situation that the ret is just zero */
+    if( ret == 0 ) {
+        return 0;
+    }
+
+    /* We push the connect fd into the write set, and by using
+     * getsockopt SO_ERROR to figure out whether the connection
+     * has been done or just failed */
+    FD_ZERO(&write);
+    FD_SET(fd,&write);
+
+    do {
+        ret = select(fd+1,NULL,&write,NULL,tm);
+    } while( ret <0 && net_has_error() == 0 );
+
+    if( ret <= 0 ) {
+        /* Timeout or error happened , anyway we are not connected */
+        return -1;
+    }
+
+    assert( ret == 1 && FD_ISSET(fd,&write) );
+
+    /* We are not sure whether it is the ERROR that wake me up or the
+     * successfully connection wakes me up. We will figure this out by
+     * using getsockopt to get the pending error. */
+    len = sizeof(int);
+    getsockopt(fd,SOL_SOCKET,SO_ERROR,cast(char*,&val),&len);
+
+    if( val !=0 ) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/* The following read/write function will assume that the fd 
+ * is already a non blocking fd, so no non blocking/blocking
+ * version fd switch will happen here. The net_timeout_read/write
+ * is a wrapper around these 2 functions since it will modify
+ * the blocking semantic for that socket and then modify it 
+ * _BACK_ */
+
+static
+int read_tm( socket_t fd , void* data , size_t sz , const struct timeval* tm ) {
+    FD_SET read;
+    int ret;
+
+    FD_ZERO(&read);
+    FD_SET(fd,&read);
+
+    do {
+        ret = select(fd+1,&read,NULL,NULL,tm);
+    } while( ret <0 && net_has_error() == 0 );
+
+    if( ret <= 0 ) {
+        return ret;
     } else {
-        sock = socket(AF_INET,SOCK_STREAM,0);
-        if( sock == invalid_socket_handler )
-            return sock;
-        reuse_socket(sock);
-        ret = connect(sock,cast(struct sockaddr*,&ipv4),sizeof(ipv4));
-        if( ret != 0 ) {
-            closesocket(sock);
-            return invalid_socket_handler;
-        }
-        return sock;
+        assert( ret == 1 && FD_ISSET(fd,&read) );
+        return recv(fd,data,sz,0);
     }
 }
 
+static
+int write_tm( socket_t fd , const void* data , size_t sz , const struct timeval* tm ) {
+    FD_SET write;
+    int ret;
+
+    FD_ZERO(&write);
+    FD_SET(fd,&write);
+
+    do {
+        ret = select(fd+1,NULL,&write,NULL,tm);
+    } while( ret <0 && net_has_error() == 0 );
+
+    if( ret <= 0 ) {
+        return ret;
+    } else {
+        assert( ret == 1 && FD_ISSET(fd,&write) );
+        return send(fd,data,sz,0);
+    }
+}
+
+int net_timeout_read( socket_t fd , void* buf , size_t sz, int msec ) {
+    int ret;
+    struct timeval tv;
+    tv.tv_sec = msec/1000;
+    tv.tv_usec= (msec%1000)*1000;
+
+    nonblock_socket(fd);
+    ret = read_tm(fd,buf,sz,msec < 0 ? NULL : &tv);
+    block_socket(fd);
+
+    return ret;
+}
+
+int net_timeout_write( socket_t fd , const void* buf , size_t sz , int msec ) {
+    int ret;
+    struct timeval tv;
+    tv.tv_sec = msec/1000;
+    tv.tv_usec= (msec%1000)*1000;
+
+    nonblock_socket(fd);
+    ret = write_tm(fd,buf,sz, msec < 0 ? NULL : &tv);
+    block_socket(fd);
+
+    return ret;
+}
+
+/* client function */
+socket_t net_block_client_connect( const char* addr , int msec ) {
+    int ret;
+    socket_t sock;
+    struct timeval tv;
+
+    tv.tv_sec = msec/1000;
+    tv.tv_usec= (msec%1000)*1000;
+
+    sock = socket(AF_INET,SOCK_STREAM,0);
+    if( sock == invalid_socket_handler )
+        return sock;
+
+    reuse_socket(sock);
+    
+    if( msec >= 0 ) {
+        /* Although this API expose blocking semantic but we simulate it
+         * through non blocking version and this really make our life 
+         * easier when we want to handle timeout */
+        nonblock_socket(sock);
+    }
+
+    ret = connect_tm(sock,addr,msec < 0 ? NULL : &tv);
+
+    if( msec >= 0 ) {
+        /* set the socket back to blocking model */
+        block_socket(sock);
+    }
+
+    if( ret != 0 ) {
+        closesocket(sock);
+        return invalid_socket_handler;
+    }
+
+    return sock;
+}
+
 int net_non_block_client_connect(struct net_server* server ,
-    const char* addr ,
-    net_ccb_func cb ,
-    void* udata ,
-    int timeout ) {
-        struct net_connection* conn = connection_create(invalid_socket_handler);
-        connection_add(server,conn);
-        conn->cb = cb;
-        conn->user_data = udata;
-        if( net_non_block_connect(conn,addr,timeout) == NET_EV_REMOVE ) {
-            if( conn->socket_fd == invalid_socket_handler ) {
-                /* error */
-                connection_close(conn);
-                return -1;
-            }
+                                 const char* addr ,
+                                 net_ccb_func cb ,
+                                 void* udata ,
+                                 int timeout ) {
+    struct net_connection* conn = connection_create(invalid_socket_handler);
+    connection_add(server,conn);
+    conn->cb = cb;
+    conn->user_data = udata;
+    if( net_non_block_connect(conn,addr,timeout) == NET_EV_REMOVE ) {
+        if( conn->socket_fd == invalid_socket_handler ) {
+            /* error */
+            connection_close(conn);
+            return -1;
         }
-        return 0;
+    }
+    return 0;
 }
 
 int net_non_block_connect( struct net_connection* conn , const char* addr , int timeout ) {
@@ -774,7 +973,7 @@ int net_non_block_connect( struct net_connection* conn , const char* addr , int 
     if( fd == invalid_socket_handler ) {
         return NET_EV_REMOVE;
     }
-    nb_socket(fd);
+    nonblock_socket(fd);
     exec_socket(fd);
     reuse_socket(fd);
     ret = connect( fd , cast(struct sockaddr*,&ipv4) , sizeof(ipv4));
@@ -807,7 +1006,7 @@ struct net_connection* net_timer( struct net_server* server , net_ccb_func cb , 
 
 struct net_connection* net_fd( struct net_server* server, net_ccb_func cb , void* data ,  socket_t fd , int pending_event ) {
     struct net_connection* conn = connection_create(fd);
-    nb_socket(fd);
+    nonblock_socket(fd);
     exec_socket(fd);
     conn->cb = cb;
     conn->user_data = data;
@@ -829,7 +1028,7 @@ void net_init() {
     WSADATA data;
     WSAStartup(MAKEWORD(2, 2), &data);
 #endif /* _WIN32 */
-    srand(time(NULL));
+    srand(cast(unsigned int,time(NULL)));
 }
 
 /* Web Socket Implementation */
@@ -862,12 +1061,12 @@ size_t b64_encode( const char *src, size_t src_len, char *dst ) {
     /* tail */
     switch( j % 4 ) {
     case 2:
+        dst[j] = '=';
         dst[j+1] = '=';
-        dst[j+2] = '=';
         j += 2;
         break;
     case 3:
-        dst[j+1] = '=';
+        dst[j] = '=';
         ++j;
         break;
     default:
@@ -905,28 +1104,40 @@ int b64_decode( const char *src, size_t src_len, char *dst , size_t dst_len ) {
     };
 
     unsigned char b1,b2,b3,b4;
-    char* sdst = dst;
+    unsigned char* sdst = dst;
+    const unsigned char* usrc = cast(const unsigned char*,src);
 
     while( src_len >=4 && 
-          (b1 = B64LOOKUP[src[0]]) != 255 &&
-          (b2 = B64LOOKUP[src[1]]) != 255 &&
-          (b3 = B64LOOKUP[src[2]]) != 255 && 
-          (b4 = B64LOOKUP[src[3]]) != 255 ) {
+          (b1 = B64LOOKUP[usrc[0]]) != 255 &&
+          (b2 = B64LOOKUP[usrc[1]]) != 255 &&
+          (b3 = B64LOOKUP[usrc[2]]) != 255 && 
+          (b4 = B64LOOKUP[usrc[3]]) != 255 ) {
         /* rule out the broken stream here */
         if( b1 == 254 || b2 == 254 ) 
             return -1; 
 
         *dst++ = b1 << 2 | b2 >> 4;
+        --dst_len;
+        if( dst_len == 0 )
+            break;
+
         /* = */
         if (b3 == 254) break;
         *dst++ = b2 << 4 | b3 >> 2;
+        --dst_len;
+        if( dst_len == 0 )
+            break;
+        
         /* = */
         if (b4 == 254) break;
 
         *dst++ = b3 << 6 | b4;
+        --dst_len;
+        if( dst_len == 0 )
+            break;
         
         src_len -= 4;
-        src+=4;
+        usrc+=4;
     }
 
     /* done */
@@ -1115,6 +1326,7 @@ void SHA1_Final(SHA1_CTX* context, uint8_t digest[SHA1_DIGEST_SIZE])
 #define WS_MAX_HTTP_ATTRIBUTE_LINE_NUMBER 31
 #define WS_FAIL_TIMEOUT_CLOSE 1000
 static const char* WS_KEY_COOKIE="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+#define WS_CONCATE_KEY_LEN 52
 
 /* This object is _SENT_ from client but it needs to parsed out by server */
 struct ws_cli_handshake {
@@ -1155,6 +1367,9 @@ int http_readline( const char* c , size_t len , int* eof ) {
     const void* pos;
     *eof = 0;
 
+    if( len == 0 )
+        return -1;
+
     pos = memchr(c,'\n',len);
     if( pos == NULL )
         return -1;
@@ -1164,11 +1379,6 @@ int http_readline( const char* c , size_t len , int* eof ) {
         if( cast(const char*,pos) - c + 2 <= cast(int,len) ) {
             const char* nc = cast(const char*,pos)+1;
             if( nc[0]== '\r' && nc[1] == '\n' )
-                *eof = 1;
-        } else {
-            /* Checking if we are the last line by saying that
-             * we have an extra \r\n as the only elements in line */
-            if(cast(const char*,pos)-c == 2)
                 *eof = 1;
         }
         /* tell the caller that we have got at least one line */
@@ -1269,8 +1479,12 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
 
     do {
         num = http_readline(data,len,&eof);
-        if (num == -1)
+        if (num == -1) {
             return data-s;
+        } else if( num == 2 ) {
+            /* EOF with a single line only contains \r\n */
+            break;
+        }
         cast(char*,data)[num-2] = 0;
         /* we have at least one line data now */
         if ( hs->line_num == 0 ) {
@@ -1278,8 +1492,6 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
             ret = ws_cli_handshake_check_first_line(data,hs->dir);
             if( ret != 0 )
                 goto fail;
-            data += ret;
-            ++hs->line_num;
         } else {
             const char* semicon;
             semicon = strchr(data,':');
@@ -1318,6 +1530,7 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
                 goto again;
             } else if( strccamp(data,"Sec-WebSocket-Key") == 0 ) {
                 int i = 1;
+
                 if( hs->ws_key[0] ) {
                     ret = WS_UNKNOWN_WS_KEY;
                     *cast(char*,semicon) = ':';
@@ -1325,12 +1538,12 @@ int ws_cli_handshake_parse( const char* data , size_t len , struct ws_cli_handsh
                 }
                 i = http_skip(semicon+1,' ')+1;
                 /* now we can copy the key into the buffer now */
-                if( strlen(semicon+i) < 16 ){
+                if( strlen(semicon+i) < 24 ){
                     ret = WS_UNKNOWN_WS_KEY;
                     *cast(char*,semicon) = ':';
                     goto fail;
                 }
-                memcpy( hs->ws_key , semicon+i , 16 );
+                b64_decode(semicon+i,24,hs->ws_key,16);
                 goto again;
             } else if( strccamp(data,"Host") == 0 ) {
                 int i = 1;
@@ -1359,6 +1572,7 @@ again:      /* for quick skip the next if-else chain and also recover the string
 loop:   /* move to next line */
         cast(char*,data)[num-2] = '\r';
         data += num;
+        len -= num;
         ++hs->line_num;
         if( hs->line_num == WS_MAX_HTTP_ATTRIBUTE_LINE_NUMBER ) {
             ret = WS_TOO_LARGE_HTTP_HEADER;
@@ -1393,11 +1607,14 @@ size_t ws_handshake_ser_reply( const char ws_key[16] , char ret[1024] ) {
     char buf[128];
     SHA1_CTX shal_ctx;
     uint8_t digest[SHA1_DIGEST_SIZE];
-    size_t len = cast(size_t, sprintf(buf,"%s%s",ws_key,WS_KEY_COOKIE) );
+    size_t len;
+
+    memcpy(buf,ws_key,16);
+    strcpy(buf+16,WS_KEY_COOKIE);
 
     /* shal1 these key */
     SHA1_Init(&shal_ctx);
-    SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),len);
+    SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),WS_CONCATE_KEY_LEN);
     SHA1_Final(&shal_ctx,digest);
 
     /* encode it into base64 */
@@ -1420,7 +1637,7 @@ static
 void ws_handshake_generate_key( char b64_buf[25] , char key[16] ) {
     int i;
     for( i = 0 ; i < 16 ; ++i ) {
-        key[i] = cast(char,rand() % 256);
+        key[i] = 1;
     }
     b64_encode(key,16,b64_buf);
     b64_buf[24] = 0;
@@ -1453,10 +1670,11 @@ size_t ws_handshake_cli_request( char rand_key[16] ,  const char* path , const c
 #define WS_SEC_KEY_LENGTH 28
 
 struct ws_ser_handshake {
-    char key[WS_SEC_KEY_LENGTH]; /* A 20 bytes SHA1 encoded as base64 has 28 bytes */
+    char key[SHA1_DIGEST_SIZE]; /* A 20 bytes SHA1 code */
     unsigned char upgrade : 1;
     unsigned char connection : 1;
-    unsigned char line_num : 6;
+    unsigned char done: 1;
+    unsigned char line_num : 5;
 };
 
 #define INITIALIZE_WS_SER_HANDSHAKE(hs) \
@@ -1464,11 +1682,12 @@ struct ws_ser_handshake {
         (hs)->key[0] = 0; \
         (hs)->connection = 0; \
         (hs)->line_num = 0; \
+        (hs)->done = 0; \
     } while(0)
 
 static int ws_ser_handshake_check_first_line( const char* data ) {
     /* 1. Checking HTTP header line */
-    if( data[0] != 'H' || data[1] != 'H' || data[2] != 'T' ||
+    if( data[0] != 'H' || data[1] != 'T' || data[2] != 'T' ||
         data[3] != 'P' || data[4] != '/' || data[5] != '1' ||
         data[6] != '.' || data[7] != '1' )
         return WS_NOT_SUPPORT_HTTP_VERSION;
@@ -1476,7 +1695,7 @@ static int ws_ser_handshake_check_first_line( const char* data ) {
     /* 2. Checking status code */
     data += 8;
     data += http_skip( data , ' ' );
-    if( data[0] != '1' || data[1] != '0' || data[2] == '1' )
+    if( data[0] != '1' || data[1] != '0' || data[2] != '1' )
         return WS_HANDSHAKE_FAIL;
 
     return 0;
@@ -1491,8 +1710,12 @@ int ws_ser_handshake_parse( const char* data , size_t len , struct ws_ser_handsh
 
     do {
         num = http_readline(data,len,&eof);
-        if( num < 0 )
+        if( num < 0 ) {
             return data-s;
+        } else if( num == 2 ) {
+            /* EOF with a single line only contains \r\n */
+            break;
+        }
         cast(char*,data)[num-2] = 0;
 
         if( hs->line_num == 0 ) {
@@ -1504,6 +1727,10 @@ int ws_ser_handshake_parse( const char* data , size_t len , struct ws_ser_handsh
             goto loop;
         } else {
             const char* semicon = strchr(data,':');
+            if( semicon == NULL ) {
+                ret = WS_TOO_LARGE_HTTP_HEADER;
+                goto fail;
+            }
             *cast(char*,semicon) = 0;
 
             if( strccamp(data,"Upgrade") == 0 ) {
@@ -1532,7 +1759,7 @@ int ws_ser_handshake_parse( const char* data , size_t len , struct ws_ser_handsh
                     *cast(char*,semicon) = ':';
                     goto fail;
                 }
-                memcpy(hs->key,semicon+start,WS_SEC_KEY_LENGTH);
+                b64_decode(semicon+start,28,hs->key,20);
                 goto again;
             } else {
                 /* skip the unknown attribute in HTTP request */
@@ -1545,6 +1772,7 @@ loop:
         cast(char*,data)[num-2] = '\r';
         data += num;
         ++hs->line_num;
+        len -= num;
         if( hs->line_num > WS_MAX_HTTP_ATTRIBUTE_LINE_NUMBER ) {
             ret = WS_TOO_LARGE_HTTP_HEADER;
             goto fail;
@@ -1552,10 +1780,12 @@ loop:
     } while( !eof );
 
     /* checking EOF */
-    if( hs->connection && hs->upgrade && hs->key[0] )
+    if( hs->connection && hs->upgrade && hs->key[0] ) {
+        hs->done = 1;
         return 0;
-    else 
+    } else { 
         return WS_UNKNOWN_REQUEST_HEADER;
+    }
 
 fail:
     cast(char*,data)[num-2] = '\r';
@@ -1597,7 +1827,7 @@ enum {
 struct ws_frame {
     unsigned char op :4;
     unsigned char fin:1;
-    unsigned char m:3;
+    unsigned char has_mask:1;
     char mask[4];
     /* the maximum possible length of a package size which is DUMB */
     uint64_t data_len;
@@ -1615,8 +1845,11 @@ struct ws_frame {
 
 #define DESTROY_WS_FRAME(fr) \
     do { \
-        if( (fr)->data != NULL ) \
+        if( (fr)->data != NULL ) { \
             free( (fr)->data ); \
+            (fr)->data = NULL; \
+        } \
+        (fr)->state = WS_FP_FIRST_BYTE; \
     } while(0)
 
 #define REINITIALIZE_WS_FRAME(fr) \
@@ -1628,9 +1861,10 @@ struct ws_frame {
 /* this ws frame parser is a stream parser, feed it as small as 1 byte
  * will also produce valid result and not hurt any other one */
 static 
-int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
-    const char* s = data;
-    char byte;
+int ws_frame_parse( void * d , size_t len , struct ws_frame* fr ) {
+    const char* s = d;
+    const unsigned char* data = d;
+    unsigned char byte;
     size_t l;
 
     assert(len >0);
@@ -1642,7 +1876,7 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
             fr->fin = byte & 1; /* fin */
 
             byte >>=1;
-            if( byte & 7 )
+            if( (byte & 248) & 7 )
                 return WS_FP_ERR_RESERVE_BIT; /* the reserve bit _MUST_ be zero */
 
             byte >>=3;
@@ -1668,7 +1902,7 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
             break;
         case WS_FP_LENGTH:
             byte = *data;
-            fr->m = byte & 1;
+            fr->has_mask = byte & 1;
             byte >>= 1;
 
             /* the length of the frame */
@@ -1680,7 +1914,9 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
                 fr->state = WS_FP_LENGTH_LONG;
             default:
                 fr->data_len = byte;
-                if( fr->m )
+                fr->data = mem_alloc( cast(size_t,fr->data_len) );
+                fr->data_sz = 0;
+                if( fr->has_mask )
                     fr->state = WS_FP_MASK;
                 else
                     fr->state = WS_FP_PAYLOAD;
@@ -1700,7 +1936,7 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
             fr->data_sz = 0;
             fr->data = mem_alloc(cast(size_t,fr->data_len));
 
-            if( fr->m )
+            if( fr->has_mask )
                 fr->state = WS_FP_MASK;
             else
                 fr->state = WS_FP_PAYLOAD;
@@ -1723,7 +1959,7 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
 
             fr->data = mem_alloc( cast(size_t,fr->data_len) );
             
-            if( fr->m )
+            if( fr->has_mask )
                 fr->state = WS_FP_MASK;
             else
                 fr->state = WS_FP_PAYLOAD;
@@ -1752,7 +1988,7 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
 
             fr->state = WS_FP_PAYLOAD;
 
-            if( len == 4 )
+            if( len == 0 )
                 return data-s;
 
             break;
@@ -1776,7 +2012,7 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
             if( fr->data_sz == fr->data_len ) {
                 fr->state = WS_FP_DONE;
                 /* unmask the data at last if there is a mask presents */
-                if( fr->m ) {
+                if( fr->has_mask ) {
                     int i;
                     for( i = 0 ; i < fr->data_len ; ++i ) {
                         cast(char*,fr->data)[i] ^= fr->mask[i%4];
@@ -1791,13 +2027,13 @@ int ws_frame_parse( const char* data , size_t len , struct ws_frame* fr ) {
 }
 
 enum {
+    WS_FR_NORMAL,
     WS_FR_FRAG_INIT,
     WS_FR_FRAG_PACKET,
     WS_FR_FRAG_TERM,
-    WS_FR_NORMAL
 };
 static
-void* ws_make_frame( void* data , size_t* len , int mask , int frame_type , int frag ) {
+void* ws_frame_make( void* data , size_t* len , int mask , int frame_type , int frag ) {
     /* encode a chunk of data into a web socket frame */
     size_t frame_sz = 2 + (mask ? 4 : 0) + *len;
     char payload_val;
@@ -1810,20 +2046,19 @@ void* ws_make_frame( void* data , size_t* len , int mask , int frame_type , int 
 
     if( *len < 126 ) {
         payload_val = *len;
-        frame_sz += 1;
     } else if( *len >= 126 && *len <= USHRT_MAX ) {
         payload_val = 126;
-        frame_sz += 3;
+        frame_sz += 2;
     } else {
         payload_val = 127;
-        frame_sz += 9;
+        frame_sz += 8;
     }
 
     pos = (ret = mem_alloc(frame_sz));
 
     switch( frag ) {
     case WS_FR_FRAG_INIT: /* start fragmentation */
-        pos[0] = 0 & (frame_type<<4);
+        pos[0] = 0 | (frame_type<<4);
         break;
     case WS_FR_FRAG_PACKET:
         pos[0] = 0;
@@ -1832,12 +2067,12 @@ void* ws_make_frame( void* data , size_t* len , int mask , int frame_type , int 
         pos[0] = 1 ;
         break;
     case WS_FR_NORMAL:
-        pos[0] = 1 & (frame_type<<4);
+        pos[0] = 1 | (frame_type<<4);
         break;
     default: assert(0);
     }
 
-    pos[1] = (payload_val << 1) &((mask ? 1:0));
+    pos[1] = (payload_val << 1) | ((mask ? 1:0));
     pos += 2;
 
     /* payload length */
@@ -1878,14 +2113,38 @@ void* ws_make_frame( void* data , size_t* len , int mask , int frame_type , int 
     return ret;
 }
 
+/* This specific helper function is used to form the close frame which needs to be used
+ * in 1) Normal close ( Active issued or passive issued ) 2) Abortion ( When a connected
+ * connection detects error , no matter it is protocol or the content is too large */
+
+enum {
+    WS_CLOSE_NORMAL = 1000 , 
+    WS_CLOSE_PROTO_ERROR = 1002 ,
+    WS_CLOSE_PROTO_NOT_SUPPORT = 1003 ,
+    WS_CLOSE_GENERAL_ERROR = 1008 ,
+    WS_CLOSE_PROTO_DATA_TOO_LARGE = 1009
+};
+
+static
+void* ws_close_frame_make( int server , int error_code , size_t* len ) {
+    uint16_t val = htons( cast(uint16_t,error_code) );
+    *len = sizeof(val);
+    /* Based on the RFC, it says the close frame MAY contain
+     * a reason phrase in UTF-8 encoding , here we just do not
+     * contain these phrase to save some bandwitdh */
+    return ws_frame_make(&val,len,server ?0:1,WS_CLOSE,WS_FR_NORMAL);
+}
+
 /* Web socket connection */
 
 enum {
     WS_HANDSHAKE_RECV,
     WS_HANDSHAKE_SEND,
-    WS_CONNECTED,
+    WS_OPEN,
     WS_WANT_FRAG,
-    WS_CLOSED /* this socket has been SHUTDOWN */
+    WS_ACTIVE_CLOSE_SEND,
+    WS_ACTIVE_CLOSE_RECV,
+    WS_CLOSED   /* this socket has been SHUTDOWN */
 };
 
 /* Web socket server connection */
@@ -1931,7 +2190,7 @@ enum {
 
 struct net_ws_conn {
     unsigned int type :31;
-    unsigned int detached : 1; /* When this flag is on, the user is entirely treate the underlying
+    unsigned int detached : 1; /* When this flag is on, the user is entirely treat the underlying
                                 * websocket has been closed. This is needed since we _NEED_ to send
                                 * the close frame and put the websocket into valid status */
     int timeout;
@@ -1954,47 +2213,182 @@ void net_ws_destroy( struct net_ws_conn* conn ) {
         if( cli->pending_data != NULL )
             free(cli->pending_data);
     }
-    mem_free(conn);
+    free(conn);
 }
 
 static
 int ws_ser_conn_callback( int ev , int ec , struct net_connection* conn );
+
 static
 int ws_cli_conn_callback( int ev , int ec , struct net_connection* conn );
+
+static
+int ws_abort( struct net_connection* conn , struct net_ws_conn* ws_conn , int error_code ) {
+    /* Abortion means that the peer side has sent something that we don't 
+     * understand, so we send back a close frame (Recommended by RFC) and
+     * then _Fail the connection_ . */
+    size_t close_seg_sz;
+    void* close_seg = ws_close_frame_make( ws_conn->type == WS_SERVER ? 1 : 0 , error_code , &close_seg_sz );
+    net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
+    net_ws_destroy(ws_conn);
+    free(close_seg);
+    conn->user_data = NULL;
+    return NET_EV_LINGER;
+}
+
+static
+int ws_passive_close( struct net_connection* conn , int server , int error_code ) {
+    /* When we receive a CLOSE message, we need to send a CLOSE message 
+     * back and silently CLOSE the TCP connection. This job doesn't need
+     * users involvement */
+
+    void* close_seg;
+    size_t close_seg_sz;
+    close_seg = ws_close_frame_make(server,WS_CLOSE_NORMAL,&close_seg_sz);
+    net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
+    free(close_seg);
+
+    /*
+     * Recommended by RFC, server side should initialize the TCP closing
+     * to put itself into TIME_WAIT. 
+     */
+
+    if( server ) {
+        return NET_EV_LINGER;
+    } else {
+        conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
+        return NET_EV_LINGER | NET_EV_TIMEOUT;
+    }
+}
+
+/* This function will _PUT_ the ws_conntion into the WS_ACTIVE_CLOSE_SEND status, and waiting
+ * for the close reply fragment from the peer side. Once the callback function notified,
+ * then the ws_close_finish should be called to _FINISH_ the close transaction */
+
+static
+int ws_active_close_init( struct net_ws_conn* ws_conn , struct net_connection* conn ) {
+    int server = ws_conn->type == WS_SERVER ? 1 : 0;
+    size_t close_seg_sz;
+    void* close_seg = ws_close_frame_make( server , WS_CLOSE_NORMAL , &close_seg_sz );
+    net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
+    free(close_seg);
+    if( server ) {
+        ws_conn->ptr.server->ws_state = WS_ACTIVE_CLOSE_SEND;
+    } else {
+        ws_conn->ptr.client->ws_state = WS_ACTIVE_CLOSE_SEND;
+    }
+    ws_conn->detached = 1;
+    return NET_EV_WRITE;
+}
+
+static
+int ws_close_finish( struct net_ws_conn* ws_conn , struct net_connection* conn , struct ws_frame* fr ) {
+    int server = ws_conn->type == WS_SERVER ? 1 : 0;
+    int ret;
+    int close_code;
+    if( fr->data_len != 0 )
+        close_code = ntohs(*cast(uint16_t*,fr->data));
+    else
+        close_code = WS_CLOSE_NORMAL;
+
+    /* Checking the status code here */
+    if( server ) {
+        switch( ws_conn->ptr.server->ws_state ) {
+        case WS_ACTIVE_CLOSE_RECV:
+            net_ws_destroy(ws_conn);
+            return NET_EV_CLOSE;
+        case WS_OPEN:
+            ret = ws_passive_close(conn,1,WS_CLOSE_NORMAL);
+
+            if( close_code != WS_CLOSE_NORMAL )
+                ws_conn->ptr.server->cb(NET_EV_WS_ABORT,0,ws_conn);
+            else
+                ws_conn->ptr.server->cb(NET_EV_EOF,0,ws_conn);
+
+            net_ws_destroy(ws_conn);
+            return ret;
+
+        case WS_WANT_FRAG:
+            ret = ws_passive_close(conn,1,WS_CLOSE_PROTO_ERROR);
+            ws_conn->ptr.server->cb( NET_EV_ERR_READ , 0 , ws_conn );
+            net_ws_destroy(ws_conn);
+            return NET_EV_CLOSE;
+
+        default:
+            net_ws_destroy(ws_conn);
+            /* unexceptional status comes here */
+            return NET_EV_CLOSE;
+        }
+    } else {
+        switch( ws_conn->ptr.client->ws_state ) {
+        case WS_ACTIVE_CLOSE_RECV:
+            net_ws_destroy(ws_conn);
+            /* For a client, we cannot issue close directly, by RFC , it wants
+             * server entering TIME_WAIT , so we need to issue a timeout close */
+            conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
+            return NET_EV_CLOSE | NET_EV_TIMEOUT;
+        case WS_OPEN:
+            ret = ws_passive_close(conn,1,WS_CLOSE_NORMAL);
+
+            if( close_code != WS_CLOSE_NORMAL )
+                ws_conn->ptr.client->cb(NET_EV_WS_ABORT,0,ws_conn);
+            else
+                ws_conn->ptr.client->cb(NET_EV_EOF,0,ws_conn);
+
+            return NET_EV_CLOSE;
+        case WS_WANT_FRAG:
+            ret = ws_passive_close(conn,0,WS_CLOSE_PROTO_ERROR);
+            ws_conn->ptr.client->cb( NET_EV_ERR_READ , 0 , ws_conn );
+            net_ws_destroy(ws_conn);
+            return NET_EV_CLOSE;
+
+        default:
+            net_ws_destroy(ws_conn);
+            return NET_EV_CLOSE;
+        }
+    }
+}
 
 static
 int ws_conn_pending_event( int ev , struct net_ws_conn* ws_conn , struct net_connection* conn ) {
 
     /* Here we need to handle the CLOSE intention initialized by the
      * user side. The user could initialize close intention by :
-     * NET_EV_CLOSE , NET_EV_LINGER and NET_EV_LINGER_SILENT .
+     * NET_EV_CLOSE , NET_EV_LINGER_SILENT .
      * For NET_EV_CLOSE, we just need to issue a CLOSE package and
-     * then linger it silently; however for NET_EV_LINGER and 
-     * NET_EV_LINGER_SILENT, we need to insert one more frame as 
-     * close frame on the network */
+     * then linger it silently; however for NET_EV_LINGER_SILENT, 
+     * we need to insert one more frame as close frame on the network */
     
     if( ev & NET_EV_CLOSE ) {
-        char* close_seg;
+        /* This means the user want to issue an active close here */
+        return ws_active_close_init(ws_conn,conn);
+
+    } else if(  ev & NET_EV_LINGER ) {
+        /*
+         * The linger event is a little bit tricky to simulate, we need to
+         * insert a close frame after user's send buffer and also need to 
+         * reserve the user's semantic regarding NET_EV_LINTER, like timeout.
+         */
+
+        /* 1. Append a close frame after user's callback function */
+        void* close_seg;
         size_t close_seg_sz = 0;
-        close_seg = ws_make_frame( NULL , &close_seg_sz , 0 , WS_CLOSE , 0 );
+        close_seg = ws_close_frame_make( ws_conn->type == WS_SERVER ? 1 : 0 , WS_CLOSE_NORMAL , &close_seg_sz );
         net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
         free(close_seg);
-        free(ws_conn);
 
-        ev &= ~NET_EV_CLOSE;
-        ev |= NET_EV_LINGER_SILENT;
-        conn->timeout = ws_conn->timeout;
-        return ev;
-    } else if( ev & NET_EV_LINGER || ev & NET_EV_LINGER_SILENT ) {
-        char* close_seg;
-        size_t close_seg_sz = 0;
-        close_seg = ws_make_frame( NULL , &close_seg_sz , 0 , WS_CLOSE , 0 );
-        net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
-        free(close_seg);
-        free(ws_conn);
+        /* 2. Setting the status to the WS_ACTIVE_CLOSE_SEND */
+        if( ws_conn->type == WS_SERVER )
+            ws_conn->ptr.server->ws_state = WS_ACTIVE_CLOSE_SEND;
+        else
+            ws_conn->ptr.client->ws_state = WS_ACTIVE_CLOSE_SEND;
 
+        /* 3. We reserve the timeout semantic here , but _ANY_ timeout that is
+         * handled by us will directly return NET_EV_CLOSE to fail the connection */
+
+        ws_conn->detached = 1;
         conn->timeout = ws_conn->timeout;
-        return ev;
+        return NET_EV_WRITE | NET_EV_TIMEOUT;
     } else {
         /* For all the other operations , just forward the timeout and event */
         conn->timeout = ws_conn->timeout;
@@ -2013,6 +2407,11 @@ int ws_ser_handle_handshake( struct net_ws_conn* ws_conn , struct net_connection
     ret = ws_cli_handshake_parse(cast(const char*,data),len,&(c->ws_hs));
 
     if( ret < 0 ) {
+        /* This part is part of HTTP transaction, although RFC doesn't directly
+         * mention how to handle the failure in the handshake, a typical error
+         * reply in HTTP transaction will be fine here and also we close this
+         * connection directly without timeout defined by RFC */
+
         /* sending the failed reply */
         net_buffer_produce(&(conn->out),WS_HS_FAIL_REPLY,strlen(WS_HS_FAIL_REPLY));
         /* avoid the return value */
@@ -2020,8 +2419,8 @@ int ws_ser_handle_handshake( struct net_ws_conn* ws_conn , struct net_connection
         /* destroy the web socket connection */
         net_ws_destroy(ws_conn);
         /* fail the connection */
-        conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-        return NET_EV_LINGER_SILENT | NET_EV_TIMEOUT;
+        return NET_EV_LINGER;
+
     } else if( ret == 0 ) {
         if( c->ws_hs.done ) {
             char reply[1024];
@@ -2045,22 +2444,10 @@ int ws_ser_handle_handshake( struct net_ws_conn* ws_conn , struct net_connection
     }
 }
 
-static
-int ws_finish_handshake( struct net_ws_conn* ws_conn , struct net_connection* conn ) {
-    if( ws_conn->type == WS_SERVER ) {
-        ws_conn->ptr.server->ws_state = WS_CONNECTED;
-        return ws_conn_pending_event(
-            ws_conn->ptr.server->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn,conn);
-    } else {
-        ws_conn->ptr.client->ws_state = WS_CONNECTED;
-        return ws_conn_pending_event(
-            ws_conn->ptr.client->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn,conn);
-    }
-}
 
 static
 int ws_do_frag( struct ws_frame* fr , int* state ) {
-    if( *state == WS_CONNECTED ) {
+    if( *state == WS_OPEN ) {
         /* we are not in fragmentation states, so we can ACCEPT a fragmentation */
         if( !fr->fin ) {
             *state = WS_WANT_FRAG;
@@ -2070,7 +2457,7 @@ int ws_do_frag( struct ws_frame* fr , int* state ) {
         if( fr->fin ) {
             if( fr->op == 0 ) {
                 /* last segment */
-                *state = WS_CONNECTED;
+                *state = WS_OPEN;
             } else {
                 return -1;
             }
@@ -2093,7 +2480,7 @@ int ws_do_pingpong( struct ws_frame* fr , struct net_connection* conn , int* sen
     /* Handle the ping-pong message here */
     switch(fr->op) {
     case WS_PING:
-        pong_msg = ws_make_frame(NULL,&pong_msg_sz,0,WS_PONG,WS_FR_NORMAL);
+        pong_msg = ws_frame_make(NULL,&pong_msg_sz,0,WS_PONG,WS_FR_NORMAL);
         net_buffer_produce(&(conn->out),pong_msg,pong_msg_sz);
         free(pong_msg);
         *pev |= NET_EV_WRITE;
@@ -2114,27 +2501,6 @@ int ws_do_pingpong( struct ws_frame* fr , struct net_connection* conn , int* sen
             return -1;
         }
     default:assert(0); return -1;
-    }
-}
-
-static
-int ws_do_close( struct net_connection* conn , int server ) {
-    /* When we receive a CLOSE message, we need to send a CLOSE message 
-     * back and silently CLOSE the TCP connection. This job doesn't need
-     * users involvement */
-    char* close_seg;
-    size_t close_seg_sz=0;
-    close_seg = ws_make_frame(NULL,&close_seg_sz,0,WS_CLOSE,0);
-    net_buffer_produce(&(conn->out),close_seg,close_seg_sz);
-    free(close_seg);
-    /* For a server, we always expecting the client side close the
-     * connection to avoid TIME_WAIT, and in RFC it has been notified
-     * that the client _SHOULD_ close the connection at first */
-    if( server ) {
-        conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-        return NET_EV_LINGER_SILENT | NET_EV_TIMEOUT;
-    } else {
-        return NET_EV_LINGER_SILENT;
     }
 }
 
@@ -2160,24 +2526,17 @@ int ws_ser_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , 
                 if( ws_do_pingpong(&(s->ws_frame),conn,&send_ping,&ret_ev) != 0 )
                     goto fail;
             case WS_BINARY:
-            case WS_TEXT:
                 break;
 
             case WS_CLOSE:
                 /* Handling the close event INITIALIZED by the peer side */
-                ret_ev = ws_do_close(conn,1);
-                /* call user's callback function and tell him that you are finished */
-                s->cb( NET_EV_EOF , 0 , ws_conn );
-                /* destroy ws_conn */
-                net_ws_destroy(ws_conn);
-                return ret_ev;
-
+                return ws_close_finish(ws_conn,conn,&(s->ws_frame));
             default:
                 goto fail;
             }
 
             /* checking the frame is OK or not */
-            if( s->ws_frame.m == 0 ) {
+            if( s->ws_frame.has_mask == 0 ) {
                 /* a client sent message _MUST_ have mask , so this means we fail
                  * the protocol here. Just close the connection and return here */
                 goto fail;
@@ -2204,93 +2563,105 @@ int ws_ser_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , 
         return ret_ev;
     }
 fail:
+    /* Destroy the frame if we need to */
     s->cb( NET_EV_ERR_READ | ev , -1 , ws_conn );
-    net_ws_destroy(ws_conn);
-    conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-    return NET_EV_CLOSE | NET_EV_TIMEOUT;
+    return ws_abort(conn,ws_conn,WS_CLOSE_PROTO_ERROR);
 }
 
 static
 int ws_ser_conn_callback( int ev , int ec , struct net_connection* conn ) {
     struct net_ws_conn* ws_conn = cast( struct net_ws_conn* , conn->user_data );
-    struct net_ws_ser_conn* c = ws_conn->ptr.server;
+    struct net_ws_ser_conn* s = ws_conn->ptr.server;
 
     assert(ws_conn->type == WS_SERVER);
     if( ec != 0 ) {
-        c->cb(ev,ec,ws_conn);
+        if( !ws_conn->detached )
+            s->cb( ev , ec , ws_conn );
         net_ws_destroy(ws_conn);
         return NET_EV_CLOSE;
     } else {
         int rw_ev = 0;
 
         if( ev & NET_EV_EOF ) {
-            return ws_conn_pending_event(c->cb( ev , ec , ws_conn ),ws_conn,conn);
+            return ws_conn_pending_event(s->cb( ev , ec , ws_conn ),ws_conn,conn);
         }
+
         /* write */
         if( ev & NET_EV_WRITE ) {
             /* handle write */
-            switch(c->ws_state) {
+            switch(s->ws_state) {
             case WS_HANDSHAKE_SEND:
-                return ws_finish_handshake(ws_conn,conn);
-            case WS_CONNECTED:
+                s->ws_state = WS_OPEN;
+                /* Finish the handshake and calling the user's callback function */
+                return ws_conn_pending_event(
+                    s->cb(NET_EV_CONNECT,0,ws_conn),ws_conn,conn);
+            case WS_OPEN:
             case WS_WANT_FRAG:
                 /* We don't call user's callback here, because we multiplex read/write
                  * into one single callback function, we delay this function call until
                  * we finish the read operation */
                 rw_ev |= NET_EV_WRITE;
+                if( !(ev & NET_EV_READ) ) {
+                    return ws_conn_pending_event(
+                        s->cb( NET_EV_WRITE , 0 , ws_conn ) , ws_conn ,conn );
+                }
                 break;
+            case WS_ACTIVE_CLOSE_SEND:
+                /* Now change the status to WS_ACTIVE_CLOSE_RECV */
+                s->ws_state = WS_ACTIVE_CLOSE_RECV;
+                conn->timeout =WS_FAIL_TIMEOUT_CLOSE;
+                /* User is not aware of the callback function here */
+                ws_conn->detached = 1;
+                return NET_EV_READ | NET_EV_TIMEOUT;
             default:
-                /* failed event in such status */
-                c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                net_ws_destroy(ws_conn);
-                conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-                return NET_EV_CLOSE | NET_EV_TIMEOUT;
+                assert(0);
+                return NET_EV_CLOSE;
             }
 
-        } else  if( ev & NET_EV_READ ) {
+        }
+        
+        if( ev & NET_EV_READ ) {
                 /* handle read */
-                switch(c->ws_state) {
+                switch(s->ws_state) {
                 case WS_HANDSHAKE_RECV:
                     return ws_ser_handle_handshake(ws_conn,conn);
-                    break;
-                case WS_CONNECTED:
+                case WS_OPEN:
                 case WS_WANT_FRAG:
+                case WS_ACTIVE_CLOSE_RECV:
                     /* this function will call user's callback function and also
                      * append the previous write event (if we have any) to the 
                      * user's callback function which maintain consistent behavior */
                     return ws_ser_do_read(ws_conn,conn,rw_ev);
                 default:
-                    /* failed event in such status */
-                    c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                    net_ws_destroy(ws_conn);
-                    conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-                    return NET_EV_CLOSE | NET_EV_TIMEOUT;
+                    assert(0);
+                    return NET_EV_CLOSE;
                 }
-        } else {
-            return ws_conn_pending_event(
-                c->cb( ev , 0 , ws_conn ) , ws_conn ,conn );
+        } 
+
+        /* Handling timeout here, we will only have timeout when we detach users
+         * callback function */
+
+        if( ws_conn->detached && (ev & NET_EV_TIMEOUT) ) {
+            net_ws_destroy(ws_conn);
+            return NET_EV_CLOSE;
         }
+
+        return ws_conn_pending_event( s->cb( ev , 0 , ws_conn ) , ws_conn ,conn );
     }
-    return NET_EV_CLOSE;
 }
 
 static int ws_cli_validate_handshake( const struct ws_ser_handshake* hs , char rand_key[16] ) {
-    char sha1[SHA1_DIGEST_SIZE];
-    int len;
-    char buf[128];
+    char buf[WS_CONCATE_KEY_LEN+1];
     SHA1_CTX shal_ctx;
     uint8_t digest[SHA1_DIGEST_SIZE];
+    memcpy(buf,rand_key,16);
+    strcpy(buf+16,WS_KEY_COOKIE);
 
-    len = b64_decode( hs->key , WS_SEC_KEY_LENGTH , sha1, SHA1_DIGEST_SIZE );
-    assert( len == SHA1_DIGEST_SIZE );
-
-    len = sprintf(buf,"%s%s",rand_key,WS_KEY_COOKIE);
-    assert( len >0 && len < 128 );
     /* shal1 these key */
     SHA1_Init(&shal_ctx);
-    SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),len);
+    SHA1_Update(&shal_ctx,cast(const uint8_t*,buf),WS_CONCATE_KEY_LEN);
     SHA1_Final(&shal_ctx,digest);
-    return memcmp(sha1,digest,SHA1_DIGEST_SIZE);
+    return memcmp(hs->key,digest,SHA1_DIGEST_SIZE);
 }
 
 /* For a client, its initial handshake is sent once after user create it , so in the callback
@@ -2326,7 +2697,7 @@ int ws_cli_conn_finish_handshake( struct net_ws_conn* ws_conn , struct net_conne
         sz = net_buffer_readable_size(&(conn->in));
         net_buffer_consume(&(conn->in),&sz);
 
-        c->ws_state = WS_CONNECTED;
+        c->ws_state = WS_OPEN;
         /* verified */
         return ws_conn_pending_event(
             c->cb( NET_EV_CONNECT , 0 , ws_conn ),ws_conn,conn);
@@ -2361,7 +2732,7 @@ int ws_cli_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , 
     struct net_ws_cli_conn* c = ws_conn->ptr.client;
     size_t len = net_buffer_readable_size(&(conn->in));
     void* data = net_buffer_peek(&(conn->in),&len);
-    int ret = ws_frame_parse(cast(const char*,data),len,&(c->ws_frame));
+    int ret = ws_frame_parse(data,len,&(c->ws_frame));
     int ret_ev = 0;
     int state;
     size_t pong_msg_sz = 0;
@@ -2382,16 +2753,13 @@ int ws_cli_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , 
             case WS_TEXT:
                 break;
             case WS_CLOSE:
-                ret_ev = ws_do_close(conn,0);
-                c->cb( NET_EV_EOF , 0 , ws_conn );
-                net_ws_destroy(ws_conn);
-                return ret_ev;
+                return ws_close_finish(ws_conn,conn,&(c->ws_frame));
             default:
                 goto fail;
             }
 
             /* client will not have any mask here */
-            if( c->ws_frame.m ) {
+            if( c->ws_frame.has_mask ) {
                 goto fail;
             } 
             state = c->ws_state;
@@ -2416,10 +2784,9 @@ int ws_cli_do_read( struct net_ws_conn* ws_conn , struct net_connection* conn , 
         return ret_ev;
     }
 fail:
+    DESTROY_WS_FRAME(&(c->ws_frame));
     c->cb( NET_EV_ERR_READ | ev , -1 , ws_conn );
-    net_ws_destroy(ws_conn);
-    conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-    return NET_EV_CLOSE | NET_EV_TIMEOUT;
+    return ws_abort(conn,ws_conn,WS_CLOSE_PROTO_ERROR);
 }
 
 static
@@ -2429,11 +2796,13 @@ int ws_cli_conn_callback( int ev , int ec , struct net_connection* conn ) {
 
     if( ec != 0 ) {
         /* Network error */
-        c->cb( ev , ec , ws_conn );
+        if( !ws_conn->detached )
+            c->cb( ev , ec , ws_conn );
         net_ws_destroy(ws_conn);
         return NET_EV_CLOSE;
     } else {
         int rw_ev = 0; /* read write event */
+
         if( ev & NET_EV_EOF ) {
             return ws_conn_pending_event(c->cb(ev,ec,ws_conn),ws_conn ,conn);
         }
@@ -2443,39 +2812,48 @@ int ws_cli_conn_callback( int ev , int ec , struct net_connection* conn ) {
             case WS_HANDSHAKE_SEND:
                 c->ws_state = WS_HANDSHAKE_RECV;
                 return NET_EV_READ;
-            case WS_CONNECTED:
+            case WS_OPEN:
             case WS_WANT_FRAG:
                 rw_ev |= NET_EV_WRITE;
+                if( !(ev & NET_EV_READ) ) {
+                    ws_conn_pending_event(
+                        c->cb( NET_EV_WRITE , 0 , ws_conn ) , ws_conn ,conn);
+                }
                 break;
-            default:
-                /* failed event in such status */
-                c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                net_ws_destroy(ws_conn);
+            case WS_ACTIVE_CLOSE_SEND:
+                c->ws_state = WS_ACTIVE_CLOSE_RECV;
                 conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-                return NET_EV_CLOSE | NET_EV_TIMEOUT;
+                ws_conn->detached = 1;
+                return NET_EV_READ | NET_EV_TIMEOUT;
+            default:
+                assert(0);
+                return NET_EV_CLOSE;
             }
-        } else if( ev & NET_EV_READ ) {
+        } 
+        
+        if( ev & NET_EV_READ ) {
             switch(c->ws_state) {
             case WS_HANDSHAKE_RECV:
                 /* We want handshake here */
                 return ws_cli_conn_finish_handshake(ws_conn,conn);
-            case WS_CONNECTED:
+            case WS_OPEN:
             case WS_WANT_FRAG:
+            case WS_ACTIVE_CLOSE_RECV:
                 return ws_cli_do_read(ws_conn,conn,rw_ev);
             default:
-                assert( c->ws_state != WS_HANDSHAKE_SEND );
-                /* failed event in such status */
-                c->cb( NET_EV_ERR_CONNECT , -1 , ws_conn );
-                net_ws_destroy(ws_conn);
-                conn->timeout = WS_FAIL_TIMEOUT_CLOSE;
-                return NET_EV_CLOSE | NET_EV_TIMEOUT;
+                assert(0);
+                return NET_EV_CLOSE;
             }
-        } else {
-            return ws_conn_pending_event(
-                c->cb( ev , 0 , ws_conn ) , ws_conn ,conn);
+        } 
+
+        if( ws_conn->detached && (ev & NET_EV_TIMEOUT) ) {
+            net_ws_destroy(ws_conn);
+            return NET_EV_CLOSE;
         }
+
+        return ws_conn_pending_event(
+            c->cb( ev , 0 , ws_conn ) , ws_conn ,conn);
     }
-    return NET_EV_CLOSE;
 }
 
 void* net_ws_get_udata( struct net_ws_conn* ws ) {
@@ -2521,11 +2899,11 @@ int net_ws_send( struct net_ws_conn* ws , void* data, size_t sz ) {
     struct net_buffer* out;
     if( ws->type == WS_SERVER ) {
         assert( ws->ptr.server->ws_state != WS_CLOSED );
-        framed_data = ws_make_frame( data , &framed_sz , 0 , WS_BINARY , 0 );
+        framed_data = ws_frame_make( data , &framed_sz , 0 , WS_BINARY , WS_FR_NORMAL );
         out = &(ws->ptr.server->trans->out);
     } else {
         assert( ws->ptr.client->ws_state != WS_CLOSED );
-        framed_data = ws_make_frame( data , &framed_sz , 1 , WS_BINARY , 0 );
+        framed_data = ws_frame_make( data , &framed_sz , 1 , WS_BINARY , WS_FR_NORMAL );
         out = &(ws->ptr.client->trans->out);
     }
     net_buffer_produce(out,framed_data,framed_sz);
@@ -2563,6 +2941,7 @@ int net_ws_create_server( struct net_connection* conn ,
     struct net_ws_conn* c = mem_alloc(sizeof(struct net_ws_conn)+sizeof(struct net_ws_ser_conn));
     c->type = WS_SERVER;
     c->timeout = 0;
+    c->detached =0;
     c->ptr.server = cast(struct net_ws_ser_conn*,(cast(char*,c)+sizeof(struct net_ws_conn)));
     c->ptr.server->cb = cb;
     c->ptr.server->pending_data = NULL;
@@ -2587,6 +2966,7 @@ int net_ws_create_client( struct net_connection* conn ,
     struct net_ws_conn* c = mem_alloc(sizeof(struct net_ws_conn)+sizeof(struct net_ws_ser_conn));
     c->type = WS_CLIENT;
     c->timeout = 0;
+    c->detached =0;
     c->ptr.client = cast(struct net_ws_cli_conn*,(cast(char*,c)+sizeof(struct net_ws_conn)));
     c->ptr.client->cb = cb;
     c->ptr.client->pending_data = NULL;
@@ -2607,7 +2987,7 @@ int net_ws_create_client( struct net_connection* conn ,
  * Client side websocket API for blocking version
  * ============================================*/
 
-int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char* path , const char* host ) {
+int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char* path , const char* host , int timeout ) {
     char key[16];
     size_t buf_pos = 0;
     char hs[1024];
@@ -2615,30 +2995,32 @@ int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char*
     struct ws_ser_handshake ws_hs;
     int ret;
 
+    /* Initialize the ws_cli object */
+    INITIALIZE_WS_SER_HANDSHAKE(&ws_hs);
+
     ws_cli->fd = invalid_socket_handler;
     ws_cli->buf.mem = NULL;
 
-    /* Initialize the ws_cli object */
-    ws_cli->fd = net_block_client_connect(addr);
+    ws_cli->fd = net_block_client_connect(addr,timeout);
+
     if( ws_cli->fd == invalid_socket_handler )
         goto fail;
 
-    /* Initialize the buffer object */
     net_buffer_create(1024,&(ws_cli->buf));
 
     if( strlen(path) >= WS_MAX_DIR_NAME || 
         strlen(path) >= WS_MAX_HOST_NAME )
         goto fail;
 
-    /* Sending out the handshake package */
+    /* 1. Send out the websocket handshake frame */
     sz = ws_handshake_cli_request(key,path,host,hs);
-
-    while( (ret = send(ws_cli->fd,hs,sz,0)) < 0 ) {
+    while( (ret =send(ws_cli->fd,hs,sz,0)) <0 )
         if( errno != EINTR )
             goto fail;
-    }
 
-    /* Waiting for the handshake reply */
+    /* 2. Wait for the peer side the send the handshake 
+     * message feedback here */
+
     do {
         int recv_sz;
         void* hs_data;
@@ -2660,11 +3042,16 @@ int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char*
         ret = ws_ser_handshake_parse(hs_data,hs_data_sz,&ws_hs);
 
         if( ret == 0 ) {
-            /* The handshake package is entirely received, just check
-             * its key is OK or not here */
-            if( ws_cli_validate_handshake(&ws_hs,key) != 0 )
-                goto fail;
-            break;
+            if( ws_hs.done ) {
+
+                /* The handshake package is entirely received, just check
+                 * its key is OK or not here */
+                if( ws_cli_validate_handshake(&ws_hs,key) != 0 )
+                    goto fail;
+                sz = net_buffer_readable_size(&(ws_cli->buf));
+                net_buffer_consume(&(ws_cli->buf),&sz);
+                break;
+            }
         } else {
             if( ret < 0 )
                 goto fail;
@@ -2675,6 +3062,7 @@ int net_ws_fd_connect( struct ws_client* ws_cli , const char* addr , const char*
         }
     } while(1);
 
+    ws_cli->state = WS_OPEN;
     /* when we reach here, it means the connection is finished now */
     return 0;
 
@@ -2690,8 +3078,15 @@ int net_ws_fd_send( struct ws_client* ws_cli , void* data , size_t sz ) {
     void* frame;
     int ret;
     assert( ws_cli->fd != invalid_socket_handler );
+    
+    if( ws_cli->state == WS_CLOSED ) {
+        return 0;
+    } else if( ws_cli->state != WS_OPEN && ws_cli->state != WS_WANT_FRAG ) {
+        errno = EINVAL;
+        return -1;
+    }
 
-    frame = ws_make_frame(data,&sz,1,WS_BINARY,0);
+    frame = ws_frame_make(data,&sz,1,WS_BINARY,WS_FR_NORMAL);
     while( (ret =send(ws_cli->fd,frame,sz,0)) <0 )
         if( errno != EINTR )
             goto fail;
@@ -2709,6 +3104,48 @@ fail:
  */
 
 static
+int net_ws_fd_handle_close_frame( struct ws_client* ws_cli , const struct ws_frame* fr ) {
+    /*
+     * When we receive a close frame, it means we are gonna perform
+     * a passive close here. We need to send out a close fragment and
+     * also, we need to report the current status to the user. If we
+     * are in status WS_WANT_FRAG and then we get a close notification,
+     * it means our peer side is not behaving properly, so we need to
+     * notify user that we have a protocol error. */
+    ws_cli->state = WS_CLOSED;
+
+    if( ws_cli->state == WS_WANT_FRAG ) {
+        /*
+         * Based on RFC, we don't need to send the close message here,
+         * just notifying user we are in a protocol error situations .
+         */
+        errno = EPROTO;
+        return -1;
+    } else {
+        int close_code;
+        int ret;
+        if( fr->data_len != 0 ) 
+            close_code = ntohs(*cast(uint16_t*,fr->data));
+        else
+            close_code = WS_CLOSE_NORMAL;
+
+        if( close_code == WS_CLOSE_NORMAL ) {
+            void* close_frag;
+            size_t close_frag_sz;
+            close_frag_sz = 0;
+            close_frag = ws_frame_make(NULL,&close_frag_sz,0,WS_CLOSE,WS_FR_NORMAL);
+            ret = net_timeout_write( ws_cli->fd , close_frag , close_frag_sz , 5000 ) > 0 ? 0 : -1;
+            free( close_frag );
+        } else {
+            errno = EPROTO;
+            ret = -1;
+        }
+
+        return ret;
+    }
+}
+
+static
 int net_ws_fd_handle_ctrl_frame( struct ws_client* ws_cli , const struct ws_frame* fr ) {
     void* pong_fr;
     size_t pong_fr_len;
@@ -2717,12 +3154,12 @@ int net_ws_fd_handle_ctrl_frame( struct ws_client* ws_cli , const struct ws_fram
     switch(fr->op) {
     case WS_CLOSE:
         /* Return zero to simulate the system socket behavior*/
-        return 0;
+        return net_ws_fd_handle_close_frame(ws_cli,fr);
     case WS_PING:
         /* The ping operations, we need to handle it with PONG 
          * frame here */
         pong_fr_len = 0;
-        pong_fr = ws_make_frame(NULL,&pong_fr_len,0,WS_PONG,0);
+        pong_fr = ws_frame_make(NULL,&pong_fr_len,0,WS_PONG,WS_FR_NORMAL);
         /* send this piece of data out of bound here */
         ret = send(ws_cli->fd,pong_fr,pong_fr_len,0);
         free(pong_fr);
@@ -2748,6 +3185,13 @@ void* net_ws_fd_recv( struct ws_client* ws_cli , size_t* buf_sz ) {
     struct ws_frame fr;
     char buf[1024];
 
+    if( ws_cli->state != WS_OPEN && ws_cli->state != WS_WANT_FRAG ) {
+        errno = EINVAL;
+        if( ws_cli->state == WS_CLOSED )
+            *buf_sz = 0; /* telling the user that this socket has been closed */
+        return NULL;
+    }
+
     INITIALIZE_WS_FRAME(&fr);
 
     /* feed it with ws_frame_parse function */
@@ -2763,6 +3207,7 @@ void* net_ws_fd_recv( struct ws_client* ws_cli , size_t* buf_sz ) {
 
         if( ret < 0 ) {
             /* The frame has an error internally */
+            errno = EPROTO;
             DESTROY_WS_FRAME(&fr);
             return NULL;
         } else if( ret >= 0 ) {
@@ -2776,14 +3221,37 @@ void* net_ws_fd_recv( struct ws_client* ws_cli , size_t* buf_sz ) {
             case WS_PING:
             case WS_CLOSE:
                 ret = net_ws_fd_handle_ctrl_frame(ws_cli,&fr);
-                DESTROY_WS_FRAME(&fr);
-                if( fr.op == WS_CLOSE ) {
+                if( ret < 0 ) {
+                    /* We have encounter an error, so we are not sure
+                     * the data current we have is OK or not, just notify
+                     * the user that we have an error and drop everything*/
+                    DESTROY_WS_FRAME(&fr);
                     return NULL;
                 } else {
-                    /* Redo the job again after getting a PING message */
-                    continue;
+                    /* The control frame can carry data as well here */
+                    if( fr.data_len != 0 )
+                        goto done;  /* Even if this data is carried through close frame, we
+                                     * don't notify user with this recv, but delay it when
+                                     * user call recv again or send again */
+                    else {
+                        if( fr.op == WS_PING ) {
+                            DESTROY_WS_FRAME(&fr);
+                            break;
+                        } else {
+                            DESTROY_WS_FRAME(&fr);
+                            *buf_sz = 0;
+                            return NULL;
+                        }
+                    }
                 }
             case WS_BINARY:
+                /* Here we get a correct binary data package, however we need to 
+                 * check its fragmentation validation here as well */
+                if( ws_do_frag(&fr,&ws_cli->state) != 0 ) {
+                    errno = EPROTO;
+                    DESTROY_WS_FRAME(&fr);
+                    return NULL;
+                }
                 goto done;
             default:
                 /* Unknown message type, just ignore this frame and return
@@ -2794,11 +3262,18 @@ void* net_ws_fd_recv( struct ws_client* ws_cli , size_t* buf_sz ) {
         }
 
         /* read data from the socket , very sloppy method */
-        ret = recv(ws_cli->fd,buf,1024,0);
+        while( (ret = recv(ws_cli->fd,buf,1024,0)) < 0 )
+            if( errno != EINTR )
+                break;
 
         if( ret ==0 ) {
             DESTROY_WS_FRAME(&fr);
-            return 0;
+            /* the peer side shutdown the connection , we don't
+             * send close fragment since it may be that the peer
+             * side just close the underlying socket layer */
+            ws_cli->state = WS_CLOSED;
+            *buf_sz = 0;
+            return NULL;
         } else if( ret < 0 ) {
             return NULL;
         } else {
@@ -2819,15 +3294,99 @@ int net_ws_fd_close( struct ws_client* ws_cli ) {
     size_t close_fr_sz = 0;
     int ret;
 
-    close_fr = ws_make_frame(NULL,&close_fr_sz,0,WS_CLOSE,0);
+    /* This socket has been closed by PASSIVE close */
+    if( ws_cli->state == WS_CLOSED ) {
+        ret = 0;
+        goto done;
+    }
 
-    while( (ret =send(ws_cli->fd,close_fr,close_fr_sz,0)) <0 )
-        if( errno != EINTR )
-            break;
+    close_fr = ws_close_frame_make(0,WS_CLOSE_NORMAL,&close_fr_sz);
+    /* As this is the close segment, so we don't want to wait too long
+     * time on sending out the close frame . It is highly possible that
+     * the peer side turn/abort the protocol by just tearing down the 
+     * tcp connection. Therefore, using a timeout to protect the long wait
+     * here do make sense. */
+
+    if( net_timeout_write( ws_cli->fd , close_fr , close_fr_sz , 2000 ) > 0 ) {
+        /* Now we have sent out the frame correctly, then we just wait for the
+         * peer side to return back the close segment. Since it is still a problem
+         * to wait too long here, we just wait with timeout as well for the feedback.
+         * If it fails, then we just notify our user that we have already closed
+         * the web socket protocol. In order to try our best to close the connection
+         * gracefully, we will loop until where we can and then close the connection*/
+        struct net_buffer close_buf;
+        struct ws_frame fr;
+
+        net_buffer_create(256,&close_buf);
+        INITIALIZE_WS_FRAME(&fr);
+
+        do {
+            char buf[256];
+            ret = net_timeout_read( ws_cli->fd , buf , 256 , 10000 );
+            if( ret <= 0 ) {
+                ret = -1;
+                net_buffer_clean(&close_buf);
+                DESTROY_WS_FRAME(&fr);
+                break;
+            } else {
+                void* data;
+                size_t data_sz;
+                net_buffer_produce(&close_buf,buf,ret);
+
+                data_sz = net_buffer_readable_size(&close_buf);
+                data = net_buffer_peek(&close_buf,&data_sz);
+
+                ret = ws_frame_parse(data,data_sz,&fr);
+                if( ret < 0 ) {
+                    ret = -1;
+                    net_buffer_clean(&close_buf);
+                    DESTROY_WS_FRAME(&fr);
+                    break;
+                } else {
+                    int close_code;
+
+                    if( fr.state == WS_FP_DONE ) {
+                        /* Checking this frame is a valid close frame or not */
+                        if( fr.op != WS_CLOSE ) {
+                            errno = EPROTO;
+                            ret = -1;
+                            net_buffer_clean(&close_buf);
+                            DESTROY_WS_FRAME(&fr);
+                            break;
+                        }
+
+                        /*  Checking the close frame close code */
+                        if( fr.data_len > 0 ) {
+                            close_code = ntohs(*cast(uint16_t*,fr.data));
+                        } else {
+                            close_code = WS_CLOSE_NORMAL;
+                        }
+                        
+                        if( close_code != WS_CLOSE_NORMAL ) {
+                            errno = EPROTO;
+                            ret = -1;
+                            break;
+                        }
+
+                        /* OK , we exit the web socket gracefully here */
+                        ret = 0;
+                        break;
+                    }
+                }
+            }
+
+        } while(1);
+    } else {
+        ret = -1;
+    }
+
     free(close_fr);
+
+done:
     closesocket(ws_cli->fd);
+    ws_cli->fd = invalid_socket_handler;
     net_buffer_clean(&(ws_cli->buf));
-    return 0;
+    return ret;
 }
 
 int net_ws_fd_ping( struct ws_client* ws_cli ) {
@@ -2835,7 +3394,7 @@ int net_ws_fd_ping( struct ws_client* ws_cli ) {
     size_t ping_fr_sz = 0;
     int ret;
 
-    ping_fr = ws_make_frame(NULL,&ping_fr_sz,0,WS_PING,0);
+    ping_fr = ws_frame_make(NULL,&ping_fr_sz,0,WS_PING,WS_FR_NORMAL);
 
     while( (ret = send(ws_cli->fd,ping_fr,ping_fr_sz,0)) < 0 )
         if( errno != EINTR ) {
@@ -2847,7 +3406,6 @@ int net_ws_fd_ping( struct ws_client* ws_cli ) {
     return ret >0 ? 0 : -1;
 }
 
-
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
@@ -2855,4 +3413,3 @@ int net_ws_fd_ping( struct ws_client* ws_cli ) {
 #ifdef TEST
 #include "test.c"
 #endif /* TEST */
-

@@ -22,7 +22,6 @@ typedef int socket_t;
 extern "C" {
 #endif /* __cplusplus */
 
-
 /*
  * All these value will _ONLY_ set in the event parameter
  * and error code parameter in callback will set the errno
@@ -34,12 +33,11 @@ enum {
     NET_EV_READ  = 1,
     NET_EV_WRITE = 1 << 1,
     NET_EV_LINGER = 1 << 2,
-    NET_EV_LINGER_SILENT = 1 << 3,
-    NET_EV_CLOSE = 1 << 4 ,
-    NET_EV_REMOVE= 1 << 5 ,
-    NET_EV_EOF   = 1 << 6 ,
-    NET_EV_CONNECT = 1 << 7,
-    NET_EV_TIMEOUT = 1 << 8,
+    NET_EV_CLOSE = 1 << 3 ,
+    NET_EV_REMOVE= 1 << 4 ,
+    NET_EV_EOF   = 1 << 5 ,
+    NET_EV_CONNECT = 1 << 6,
+    NET_EV_TIMEOUT = 1 << 7,
     NET_EV_IDLE = 1 << 15,
 
     /* error code */
@@ -47,6 +45,8 @@ enum {
     NET_EV_ERR_WRITE= 1<<17,
     NET_EV_ERR_ACCEPT=1<<18,
     NET_EV_ERR_CONNECT = 1 << 19,
+
+    NET_EV_WS_ABORT = 1 << 20
 
 };
 
@@ -96,7 +96,7 @@ int net_server_poll( struct net_server* ,int , int* );
 int net_server_wakeup( struct net_server* );
 
 /* client function */
-socket_t net_block_client_connect( const char* addr );
+socket_t net_block_client_connect( const char* addr , int msec );
 
 /* connect to a specific server */
 int net_non_block_client_connect( struct net_server* server ,
@@ -124,6 +124,12 @@ struct net_buffer* net_buffer_create( size_t cap , struct net_buffer* );
 void net_buffer_clean( struct net_buffer* );
 #define net_buffer_readable_size(b) ((b)->produce_pos - (b)->consume_pos)
 #define net_buffer_writeable_size(b) ((b)->capacity - (b)->produce_pos)
+
+/* helper function */
+int net_timout_read( socket_t fd , void* buf , size_t sz, int msec );
+int net_timeout_write( socket_t fd , const void* buf , size_t len , int msec );
+
+void net_hex_dump( const char* title , const void* data , size_t sz );
 
 /* =================================
  * Web socket 
@@ -187,14 +193,29 @@ int net_ws_send( struct net_ws_conn* ws , void* data, size_t sz);
 struct ws_client {
     socket_t fd;
     struct net_buffer buf;
+    int state; /* private part */
 };
 
-int net_ws_fd_connect( struct ws_client* , const char* addr , const char* path , const char* host );
+#define net_ws_client_init(c) \
+    do { \
+        (c)->fd = invalid_socket_handler; \
+        (c)->msec= -1; \
+        (c)->state=0; \
+    } while(0)
+
+int net_ws_fd_connect( struct ws_client* , const char* addr , const char* path , const char* host , int timeout );
 int net_ws_fd_send( struct ws_client* , void* data , size_t sz );
-/* Free the return buffer after using it */
+
+/* This recv function will return a buffer that allocated on heap,
+ * so free it after using it. The EOF notification for recv is through
+ * return NULL + buf_sz  set to 0, otherwise an error will only make 
+ * this function return NULL but not set buf_sz to 0. */
+
 void* net_ws_fd_recv( struct ws_client*, size_t* buf_sz );
+
 int net_ws_fd_close( struct ws_client* );
 int net_ws_fd_ping( struct ws_client* );
+
 
 #ifdef __cplusplus
 }
